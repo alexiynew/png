@@ -6,6 +6,7 @@
 
 namespace png {
 
+typedef unsigned char BYTE;
 
 const static int SIGNATURE_SIZE = 8;
 const static int CHUNK_TYPE_SIZE = 4;
@@ -14,7 +15,7 @@ const static int CHUNK_CRC_SIZE = 4;
 
 const static char PNG_SIGNATURE[] = { -119, 80, 78, 71, 13, 10, 26, 10 };
 
-enum class ChunkType : unsigned int {
+enum ChunkType : unsigned int {
     IHDR = 0x49484452,   // Image header
     PLTE = 0x504c5445,   // Palette table
     IDAT = 0x49444154,   // Image data
@@ -41,16 +42,17 @@ enum class ChunkType : unsigned int {
     tIME = 0x74494d45    // Time stamp
 };
 
-template<typename T>
+template<typename T, long N = sizeof(T)>
 T read_value (std::fstream& fs)
 {
-    size_t size = sizeof(T);
     T value {};
-    std::unique_ptr<char[]> data( new char [size] );
-    fs.read(data.get(), size);
-    for (size_t i = 0; i < size; ++i)
+    BYTE data[N];
+    fs.read(reinterpret_cast<char*>(&data[0]), N);
+
+    for (size_t i = 0; i < N; ++i)
+    {
         value = (value << 8) | static_cast<T>(data[i]);
-        
+    }
     return value;
 }
 
@@ -64,7 +66,7 @@ struct Header {
 
 struct PNGImage::Impl {
     Header head;
-    std::vector<char> data;
+    std::vector<BYTE> data;
 
     
     bool read_file(std::fstream& fs);
@@ -72,6 +74,7 @@ struct PNGImage::Impl {
     bool is_png_file(std::fstream& fs);
     bool read_chunk(std::fstream& fs);
 
+    void process();
 
 };
 
@@ -82,7 +85,7 @@ bool PNGImage::Impl::read_file(std::fstream& fs)
     if (fs && fs.is_open() && is_png_file(fs))
     {
         fs.seekg(SIGNATURE_SIZE, fs.beg);   // skip signature
-        while (read_chunk(fs)) std::cout << "read_chunk\n";   // read image data
+        while (fs && read_chunk(fs)) std::cout << "read_chunk\n";   // read image data
         
         return true;
     }
@@ -105,41 +108,48 @@ bool PNGImage::Impl::read_chunk(std::fstream& fs)
     unsigned int length = read_value<unsigned int> (fs);
     unsigned int chunk_type = read_value<unsigned int> (fs);
 
-    std::unique_ptr<char[]> chunk_data( new char [length] );
-    fs.read(chunk_data.get(), length);
+    std::vector<BYTE> chunk_data(length);
+    fs.read(reinterpret_cast<char*>(&chunk_data[0]), length);
     
     unsigned int crc = read_value<unsigned int> (fs);
     
     switch (chunk_type)
     {
-        case IHDR : process(); break; 
-        case PLTE : process(); break; 
-        case IDAT : process(); break; 
-        case IEND : process(); break; 
-        case tRNS : process(); break; 
+        case IHDR : std::cout << "chunk: IHDR" << " len: " << length << std::endl; process(); break; 
+        case PLTE : std::cout << "chunk: PLTE" << " len: " << length << std::endl; process(); break; 
+        case IDAT : std::cout << "chunk: IDAT" << " len: " << length << std::endl; process(); break; 
+        case IEND : std::cout << "chunk: IEND" << " len: " << length << std::endl; process(); break; 
+        case tRNS : std::cout << "chunk: tRNS" << " len: " << length << std::endl; process(); break; 
 
-        case cHRM : process(); break; 
-        case gAMA : process(); break; 
-        case iCCP : process(); break; 
-        case sBIT : process(); break; 
-        case sRGB : process(); break; 
+        case cHRM : std::cout << "chunk: cHRM" << " len: " << length << std::endl; process(); break; 
+        case gAMA : std::cout << "chunk: gAMA" << " len: " << length << std::endl; process(); break; 
+        case iCCP : std::cout << "chunk: iCCP" << " len: " << length << std::endl; process(); break; 
+        case sBIT : std::cout << "chunk: sBIT" << " len: " << length << std::endl; process(); break; 
+        case sRGB : std::cout << "chunk: sRGB" << " len: " << length << std::endl; process(); break; 
 
-        case iTXt : process(); break; 
-        case tEXt : process(); break; 
-        case zTXt : process(); break; 
+        case iTXt : std::cout << "chunk: iTXt" << " len: " << length << std::endl; process(); break; 
+        case tEXt : std::cout << "chunk: tEXt" << " len: " << length << std::endl; process(); break; 
+        case zTXt : std::cout << "chunk: zTXt" << " len: " << length << std::endl; process(); break; 
 
-        case bKGD : process(); break;  
-        case hIST : process(); break;  
-        case pHYs : process(); break;  
-        case sPLT : process(); break;  
-        case tIME : process(); break;  
+        case bKGD : std::cout << "chunk: bKGD" << " len: " << length << std::endl; process(); break;  
+        case hIST : std::cout << "chunk: hIST" << " len: " << length << std::endl; process(); break;  
+        case pHYs : std::cout << "chunk: pHYs" << " len: " << length << std::endl; process(); break;  
+        case sPLT : std::cout << "chunk: sPLT" << " len: " << length << std::endl; process(); break;  
+        case tIME : std::cout << "chunk: tIME" << " len: " << length << std::endl; process(); break;  
 
         default: 
             // nothing 
+        break;
     };
           
     return true;
 }
+
+void PNGImage::Impl::process()
+{
+
+}
+
 
 // PNGImage interface
 
@@ -191,9 +201,9 @@ bool PNGImage::create(size_t Width, size_t height)
 
 bool PNGImage::open(const std::string& file_name)
 {
-    std::fstream f;
-    f.open(file_name, std::ios::in | std::ios::binary );
-    return pImpl->read_file(f);
+    std::fstream fs;
+    fs.open(file_name, std::ios::in | std::ios::binary );
+    return fs.good() && pImpl->read_file(fs);
 }
 
 bool PNGImage::save_as(const std::string& file_name)
