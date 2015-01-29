@@ -57,9 +57,29 @@ T read_value (std::fstream& fs)
 }
 
 
-struct Header {
-    
+struct Chunk {
+    unsigned int type;
+    unsigned int length;
+    std::vector<BYTE> data;
+    unsigned int crc;
 };
+
+struct Header {
+    bool from_chunk(const Chunk&);
+};
+
+bool Header::from_chunk(const Chunk& chunk)
+{
+    if (chunk.type != IHDR) 
+    {
+        std::cout << "Wrong header chunk" << std::endl;
+        return false;
+    }
+    std::cout << "Parsing header" << std::endl;
+
+    return true;
+}
+
 
 
 // PNG implementation
@@ -72,20 +92,29 @@ struct PNGImage::Impl {
     bool read_file(std::fstream& fs);
 
     bool is_png_file(std::fstream& fs);
-    bool read_chunk(std::fstream& fs);
-
-    void process();
+    Chunk read_chunk(std::fstream& fs);
 
 };
-
-
 
 bool PNGImage::Impl::read_file(std::fstream& fs)
 {
     if (fs && fs.is_open() && is_png_file(fs))
     {
         fs.seekg(SIGNATURE_SIZE, fs.beg);   // skip signature
-        while (fs && read_chunk(fs)) std::cout << "read_chunk\n";   // read image data
+
+        if (!head.from_chunk(read_chunk(fs))) return false;
+
+        while (fs && fs.peek() != EOF)      // read image data
+        {                 
+            Chunk chunk = read_chunk(fs);
+            std::cout << "chunk: " << chunk.type << std::endl;
+
+            if (chunk.type == IEND)
+            {
+                std::cout << "END" << std::endl;
+                if (fs.peek() != EOF)  std::cout << "Wrong file ending" << std::endl;          
+            }
+        }   
         
         return true;
     }
@@ -101,53 +130,21 @@ bool PNGImage::Impl::is_png_file(std::fstream& fs)
     return std::equal(file_sign, file_sign + SIGNATURE_SIZE, PNG_SIGNATURE);
 }
 
-bool PNGImage::Impl::read_chunk(std::fstream& fs)
+Chunk PNGImage::Impl::read_chunk(std::fstream& fs)
 {
-    if (!fs) { return false; }
+    Chunk chunk;
 
-    unsigned int length = read_value<unsigned int> (fs);
-    unsigned int chunk_type = read_value<unsigned int> (fs);
+    chunk.length = read_value<unsigned int> (fs);
+    chunk.type = read_value<unsigned int> (fs);
 
-    std::vector<BYTE> chunk_data(length);
-    fs.read(reinterpret_cast<char*>(&chunk_data[0]), length);
-    
-    unsigned int crc = read_value<unsigned int> (fs);
-    
-    switch (chunk_type)
+    chunk.data.resize(chunk.length);
+    if (chunk.length) 
     {
-        case IHDR : std::cout << "chunk: IHDR" << " len: " << length << std::endl; process(); break; 
-        case PLTE : std::cout << "chunk: PLTE" << " len: " << length << std::endl; process(); break; 
-        case IDAT : std::cout << "chunk: IDAT" << " len: " << length << std::endl; process(); break; 
-        case IEND : std::cout << "chunk: IEND" << " len: " << length << std::endl; process(); break; 
-        case tRNS : std::cout << "chunk: tRNS" << " len: " << length << std::endl; process(); break; 
-
-        case cHRM : std::cout << "chunk: cHRM" << " len: " << length << std::endl; process(); break; 
-        case gAMA : std::cout << "chunk: gAMA" << " len: " << length << std::endl; process(); break; 
-        case iCCP : std::cout << "chunk: iCCP" << " len: " << length << std::endl; process(); break; 
-        case sBIT : std::cout << "chunk: sBIT" << " len: " << length << std::endl; process(); break; 
-        case sRGB : std::cout << "chunk: sRGB" << " len: " << length << std::endl; process(); break; 
-
-        case iTXt : std::cout << "chunk: iTXt" << " len: " << length << std::endl; process(); break; 
-        case tEXt : std::cout << "chunk: tEXt" << " len: " << length << std::endl; process(); break; 
-        case zTXt : std::cout << "chunk: zTXt" << " len: " << length << std::endl; process(); break; 
-
-        case bKGD : std::cout << "chunk: bKGD" << " len: " << length << std::endl; process(); break;  
-        case hIST : std::cout << "chunk: hIST" << " len: " << length << std::endl; process(); break;  
-        case pHYs : std::cout << "chunk: pHYs" << " len: " << length << std::endl; process(); break;  
-        case sPLT : std::cout << "chunk: sPLT" << " len: " << length << std::endl; process(); break;  
-        case tIME : std::cout << "chunk: tIME" << " len: " << length << std::endl; process(); break;  
-
-        default: 
-            // nothing 
-        break;
-    };
-          
-    return true;
-}
-
-void PNGImage::Impl::process()
-{
-
+        fs.read(reinterpret_cast<char*>(&chunk.data[0]), chunk.length);
+    }
+    
+    chunk.crc = read_value<unsigned int> (fs);          
+    return chunk;
 }
 
 
