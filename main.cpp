@@ -3,6 +3,10 @@
 #include "PNGImage.h"
 
 
+enum class Type {
+	A, B
+};
+
 int main()
 {
     std::cout << "hello, PNG!" << std::endl;
