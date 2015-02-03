@@ -132,14 +132,12 @@ class Chank {
 public:
     Chank (std::fstream& fs, size_t size) : position(0), data(size)
     {
-        fs.read(reinterpret_cast<char*>(&chunk[0]), length + CHUNK_TYPE_SIZE); 
+      fs.read(reinterpret_cast<char*>(&data[0]), size); 
     }
 
 private:
     size_t position;
     std::vector<BYTE> data;
-
-
 };
 
 struct Header {
@@ -169,10 +167,8 @@ bool Header::from_stream(std::fstream& fs)
         return false;
     }
 
-    std::vector<BYTE> chunk(length + CHUNK_TYPE_SIZE);
-    fs.read(reinterpret_cast<char*>(&chunk[0]), length + CHUNK_TYPE_SIZE);
-
-    unsigned int type = read_value<unsigned int> (chunk);
+    Chunk chunk (fs, length + CHUNK_TYPE_SIZE);
+    unsigned int type = chunk.get_value<unsigned int> ();
 
     if (type != IHDR) 
     {
