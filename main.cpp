@@ -1,11 +1,7 @@
 #include <iostream>
+#include <iomanip>
 
 #include "PNGImage.h"
-
-
-enum class Type {
-	A, B
-};
 
 int main()
 {
