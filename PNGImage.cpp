@@ -53,7 +53,7 @@ const static unsigned int crc_table[] = {
 };
 
 
-enum ChunkType : unsigned int 
+enum class ChunkType : unsigned int 
 {
     IHDR = 0x49484452,   // Image header
     PLTE = 0x504c5445,   // Palette table
@@ -104,17 +104,6 @@ T read_value (std::fstream& fs)
     return value;
 }
 
-template<typename T, long N = sizeof(T)>
-T read_value (const std::vector<BYTE>& data, size_t pos)
-{
-    T value {};
-    for (size_t i = 0; i < N; ++i)
-    {
-        value = (value << 8) | static_cast<T>(data[pos + i]);
-    }
-    return value;
-}
-
 
 // Return the CRC of the bytes 
 unsigned int CRC(const std::vector<BYTE>& buf)
@@ -128,17 +117,83 @@ unsigned int CRC(const std::vector<BYTE>& buf)
     return c ^ 0xffffffffL;
 }
 
-class Chank {
+// --------------------------------------------------------
+// Data chunk
+
+class Chunk {
 public:
-    Chank (std::fstream& fs, size_t size) : position(0), data(size)
-    {
-      fs.read(reinterpret_cast<char*>(&data[0]), size); 
-    }
+    Chunk () : length_(0), type_(0), position_(0), data_()
+    {}
+
+    bool read_from (std::fstream& fs);
+    void write_to (std::fstream& fs);
+    
+    size_t length () const { return length_; }
+    ChunkType type() const { return static_cast<ChunkType>(type_); }
+
+    template <typename T>
+    friend Chunk& operator >> (Chunk&, T&);
+
+    template <typename T>
+    friend Chunk& operator << (Chunk&, const T&);
 
 private:
-    size_t position;
-    std::vector<BYTE> data;
+    size_t length_;
+    unsigned int type_;
+    size_t position_;
+    std::vector<BYTE> data_;
 };
+
+bool Chunk::read_from (std::fstream& fs)
+{
+    if (!fs) return false;
+    position_ = 0;
+    length_ = read_value<unsigned int> (fs);
+
+    data_.resize(length_ + CHUNK_TYPE_SIZE);
+    fs.read(reinterpret_cast<char*>(&data_[0]), length_ + CHUNK_TYPE_SIZE); 
+
+    unsigned int crc = read_value<unsigned int>(fs);
+
+    if (crc != CRC(data_))
+    {
+        std::cout << "Chunk data corupted" << std::endl;
+        return false;
+    }
+    *this >> type_;
+
+    return true;
+}
+
+void Chunk::write_to(std::fstream& fs)
+{
+    throw NotImplemented();
+}
+
+template<typename T>
+Chunk& operator >> (Chunk& ch, T& val)
+{
+    size_t size = sizeof(T);
+    if (ch.data_.size() > 0 && (ch.position_ + size) <= ch.data_.size())
+    {   
+        val = {};
+        for (size_t i = 0; i < size; ++i)
+        {
+            val = (val << 8) | static_cast<T>(ch.data_[ch.position_ + i]); 
+        }
+        ch.position_ += size;
+    }
+    return ch;
+}
+
+template<typename T>
+Chunk& operator << (Chunk&, const T& val)
+{
+    throw NotImplemented();
+}
+
+// --------------------------------------------------------
+// Image header
 
 struct Header {
     unsigned int width;       
@@ -159,31 +214,34 @@ bool Header::from_stream(std::fstream& fs)
 {
     if (!fs) return false;
 
-    unsigned int length = read_value<unsigned int> (fs);
+    Chunk chunk;
+    if (!chunk.read_from(fs)) 
+    {
+        std::cout << "Can't read header chunk" << std::endl;
+        return false;  
+    }
 
-    if (length <= 0) 
+    if (chunk.length() <= 0) 
     {
         std::cout << "Wrong header chunk size" << std::endl;
         return false;
     }
 
-    Chunk chunk (fs, length + CHUNK_TYPE_SIZE);
-    unsigned int type = chunk.get_value<unsigned int> ();
-
-    if (type != IHDR) 
+    if (chunk.type() != ChunkType::IHDR) 
     {
-        std::cout << "Wrong header chunk" << std::endl;
+        std::cout << "Wrong header chunk type" << std::endl;
         return false;
     }
+
     std::cout << "Parsing header" << std::endl;
 
-    width       = read_value<unsigned int> (fs);
-    height      = read_value<unsigned int> (fs);
-    bit_depth   = read_value<BYTE>(fs);
-    colour_type = read_value<BYTE>(fs);
-    compression = read_value<BYTE>(fs);  
-    filter      = read_value<BYTE>(fs);       
-    interlace   = read_value<BYTE>(fs);
+    chunk >> width 
+          >> height
+          >> bit_depth  
+          >> colour_type
+          >> compression
+          >> filter     
+          >> interlace;   
 
     if (width <= 0 || height <= 0) 
     {
@@ -237,15 +295,7 @@ bool Header::from_stream(std::fstream& fs)
               << "\tfilter: " << std::hex << (int)filter << "\n"
               << "\tinterlace: " << std::hex << (int)interlace << std::endl;
 
-
-
-    unsigned int crc = read_value<unsigned int> (fs);
-    unsigned int data_crc = CRC(chunk);
-
-
-    std::cout << "\tfile crc: " << std::hex << crc << " data crc: " << data_crc << std::endl;
-
-    return crc == CRC(data);
+    return true;
 }
 
 
@@ -253,7 +303,7 @@ bool Header::from_stream(std::fstream& fs)
 struct Palette { 
 };
 
-
+// --------------------------------------------------------
 // PNG implementation
 
 struct PNGImage::Impl {
@@ -278,22 +328,28 @@ bool PNGImage::Impl::read_file(std::fstream& fs)
         if (!is_png_file(fs)) return false;      // check signature 
         if (!head.from_stream(fs)) return false; // read header
 
-        while (fs && fs.peek() != EOF)         // read image data
-        {                 
-            
-            unsigned int chunk_length = read_value<unsigned int> (fs);
-            unsigned int chunk_type   = read_value<unsigned int> (fs);
+        bool has_IEND = false;
+        while (!has_IEND && fs && fs.peek() != EOF) // read image data
+        {           
 
-            std::cout << "chunk: " << std::string(reinterpret_cast<char*>(&chunk_type), 4) << std::endl;
-
-            if (chunk_type == IEND)
+            Chunk chunk;
+            if (!chunk.read_from(fs)) 
             {
-                std::cout << "END" << std::endl;
-                if (fs.peek() != EOF)  std::cout << "Wrong file ending" << std::endl;          
+               std::cout << "Can't read chunk" << std::endl;
+               return false;
             }
+            std::cout << "Read chunk: " << std::hex << static_cast<long>(chunk.type()) <<  std::endl;
+
+            has_IEND = (chunk.type() == ChunkType::IEND);
         }   
         
-        return true;
+        if (fs.peek() == EOF && has_IEND)
+        {
+            std::cout << "END" << std::endl;
+            return true;
+        } 
+
+        std::cout << "Wrong file ending" << std::endl;
     }
     return false;
 }
@@ -306,6 +362,7 @@ bool PNGImage::Impl::is_png_file(std::fstream& fs)
     return std::equal(file_sign, file_sign + SIGNATURE_SIZE, PNG_SIGNATURE);
 }
 
+// --------------------------------------------------------
 // PNGImage interface
 
 PNGImage::PNGImage() noexcept : pImpl(nullptr) 
