@@ -118,66 +118,33 @@ unsigned int CRC(const std::vector<BYTE>& buf)
 }
 
 // --------------------------------------------------------
-// Data chunk
+// File read / write support
 
-class Chunk {
-public:
-    Chunk () : length_(0), type_(0), position_(0), data_()
-    {}
+  class ImageFile {
+  public:
+    bool open(const std::string& file_name);
+    void close();
 
-    bool read_from (std::fstream& fs);
-    void write_to (std::fstream& fs);
+    bool eof();
+    bool is_open();
+
+    unsigned int current_crc();
+    void reset_crc();
     
-    size_t length () const { return length_; }
-    ChunkType type () const { return static_cast<ChunkType>(type_); }
-
-    bool eof () { return empty() || position_ >= data_.size(); }
-    bool empty () { return data_.size() - CHUNK_TYPE_SIZE == 0; }
-
-    void reset_position () { position_ = CHUNK_TYPE_SIZE; } 
+    template <typename T>
+    friend ImageFile& operator >> (ImageFile& f, T& val);
 
     template <typename T>
-    friend Chunk& operator >> (Chunk&, T&);
+    friend ImageFile& operator << (ImageFile& f, T& val);
 
-    template <typename T>
-    friend Chunk& operator << (Chunk&, const T&);
+    std::vector<BYTE> read(size_t size);
+  private:
+    std::fstream file_;
+  };
 
-private:
-    size_t length_;
-    unsigned int type_;
-    size_t position_;
-    std::vector<BYTE> data_;
-};
-
-bool Chunk::read_from (std::fstream& fs)
-{
-    if (!fs) return false;
-    position_ = 0;
-    length_ = read_value<unsigned int> (fs);
-
-    data_.resize(length_ + CHUNK_TYPE_SIZE);
-    fs.read(reinterpret_cast<char*>(&data_[0]), length_ + CHUNK_TYPE_SIZE); 
-
-    unsigned int crc = read_value<unsigned int>(fs);
-
-    if (crc != CRC(data_))
-    {
-        std::cout << "Chunk data corupted" << std::endl;
-        return false;
-    }
-    *this >> type_;
-    reset_position ();
-
-    return true;
-}
-
-void Chunk::write_to(std::fstream& fs)
-{
-    throw NotImplemented();
-}
 
 template<typename T>
-Chunk& operator >> (Chunk& ch, T& val)
+ImageFile& operator >> (ImageFile& file, T& val)
 {
     size_t size = sizeof(T);
     if (ch.data_.size() > 0 && (ch.position_ + size) <= ch.data_.size())
@@ -190,12 +157,6 @@ Chunk& operator >> (Chunk& ch, T& val)
         ch.position_ += size;
     }
     return ch;
-}
-
-template<typename T>
-Chunk& operator << (Chunk&, const T& val)
-{
-    throw NotImplemented();
 }
 
 // --------------------------------------------------------
@@ -321,35 +282,28 @@ struct PNGImage::Impl {
     Impl() : head(), palette(), data()
     {}
     
-    bool read_file(std::fstream& fs);
-    bool extract_image_data(Chunk& chunk);     // return true if all IDAT chunks has been processed
+    bool from_file(ImageFile& file);
 
-    bool is_png_file(std::fstream& fs);
+    bool is_png_file(ImageFile& file);
 
 };
 
-bool PNGImage::Impl::read_file(std::fstream& fs)
+bool PNGImage::Impl::from_file(ImageFile& file)
 {
-    if (fs && fs.is_open())
+    if (file.is_open())
     {
-        if (!is_png_file(fs)) return false;      // check signature 
-        if (!head.from_stream(fs)) return false; // read header
+        if (!is_png_file(file)) return false;      // check signature 
+        if (!head.from_stream(file)) return false; // read header
 
         bool has_IEND = false;
         bool has_IDAT = false;
         bool has_PLTE = false;
-        while (!has_IEND && fs && fs.peek() != EOF) // read image data
+        while (!has_IEND && !file.eof()) // read image data
         {           
-
-            Chunk chunk;
-            if (!chunk.read_from(fs)) 
-            {
-               std::cout << "Can't read chunk" << std::endl;
-               return false;
-            }
-            std::cout << "Read chunk: " << static_cast<unsigned int>(chunk.type()) <<  std::endl;
-
-            switch (chunk.type())
+            file.reset_crc();
+            unsigned int length, type;
+            file >> length >> type;
+            switch (type)
             {
                 case ChunkType::IDAT :
                     has_IDAT = extract_image_data(chunk);
@@ -379,7 +333,7 @@ bool PNGImage::Impl::read_file(std::fstream& fs)
             std::cout << "Wrong file ending" << std::endl;  
         }
     }
-    std::cout << "Stream is in bad state" << std::endl; 
+    std::cout << "File not open" << std::endl; 
     return false;
 }
 
@@ -411,12 +365,10 @@ bool PNGImage::Impl::extract_image_data(Chunk& chunk)
 }
 
 
-bool PNGImage::Impl::is_png_file(std::fstream& fs)
+bool PNGImage::Impl::is_png_file(ImageFile& file)
 {
-    char file_sign[SIGNATURE_SIZE];
-    fs.read (file_sign, SIGNATURE_SIZE);
-   
-    return std::equal(file_sign, file_sign + SIGNATURE_SIZE, PNG_SIGNATURE);
+    std::vector<BYTE> file_sign = file.read(SIGNATURE_SIZE);
+    return std::equal(file_sign.begin(), file_sign.end(), PNG_SIGNATURE);
 }
 
 // --------------------------------------------------------
@@ -424,7 +376,7 @@ bool PNGImage::Impl::is_png_file(std::fstream& fs)
 
 PNGImage::PNGImage() noexcept : pImpl(nullptr) 
 {
-    
+
 }
 
 PNGImage::PNGImage(const PNGImage& other) : pImpl(new Impl(*other.pImpl.get()))
@@ -470,12 +422,11 @@ bool PNGImage::create(size_t Width, size_t height)
 
 bool PNGImage::open(const std::string& file_name)
 {
-    std::fstream fs;
-    fs.open(file_name, std::ios::in | std::ios::binary );
-    if (fs.good())
+    ImageFile file;
+    if (file.open(file_name))
     {
         pImpl.reset(new Impl);
-        return pImpl->read_file(fs);
+        return pImpl->from_file(file);
     }
     return false;
 }
