@@ -129,7 +129,12 @@ public:
     void write_to (std::fstream& fs);
     
     size_t length () const { return length_; }
-    ChunkType type() const { return static_cast<ChunkType>(type_); }
+    ChunkType type () const { return static_cast<ChunkType>(type_); }
+
+    bool eof () { return empty() || position_ >= data_.size(); }
+    bool empty () { return data_.size() - CHUNK_TYPE_SIZE == 0; }
+
+    void reset_position () { position_ = CHUNK_TYPE_SIZE; } 
 
     template <typename T>
     friend Chunk& operator >> (Chunk&, T&);
@@ -161,6 +166,7 @@ bool Chunk::read_from (std::fstream& fs)
         return false;
     }
     *this >> type_;
+    reset_position ();
 
     return true;
 }
@@ -221,7 +227,7 @@ bool Header::from_stream(std::fstream& fs)
         return false;  
     }
 
-    if (chunk.length() <= 0) 
+    if (chunk.empty() || chunk.length() <= 0) 
     {
         std::cout << "Wrong header chunk size" << std::endl;
         return false;
@@ -312,10 +318,11 @@ struct PNGImage::Impl {
     std::vector<BYTE> data;
 
 
-    Impl() : head(), data() 
+    Impl() : head(), palette(), data()
     {}
     
     bool read_file(std::fstream& fs);
+    bool extract_image_data(Chunk& chunk);     // return true if all IDAT chunks has been processed
 
     bool is_png_file(std::fstream& fs);
 
@@ -329,6 +336,8 @@ bool PNGImage::Impl::read_file(std::fstream& fs)
         if (!head.from_stream(fs)) return false; // read header
 
         bool has_IEND = false;
+        bool has_IDAT = false;
+        bool has_PLTE = false;
         while (!has_IEND && fs && fs.peek() != EOF) // read image data
         {           
 
@@ -338,21 +347,69 @@ bool PNGImage::Impl::read_file(std::fstream& fs)
                std::cout << "Can't read chunk" << std::endl;
                return false;
             }
-            std::cout << "Read chunk: " << std::hex << static_cast<long>(chunk.type()) <<  std::endl;
+            std::cout << "Read chunk: " << static_cast<unsigned int>(chunk.type()) <<  std::endl;
 
-            has_IEND = (chunk.type() == ChunkType::IEND);
+            switch (chunk.type())
+            {
+                case ChunkType::IDAT :
+                    has_IDAT = extract_image_data(chunk);
+                    break;
+
+                case ChunkType::IEND : 
+                    has_IEND = true;
+                    break;
+
+                default:
+                    std::cout << "\tNo implemented action" << std::endl;
+            }
         }   
         
+        if (!has_IDAT) 
+        {
+            std::cout << "Image data was not found" << std::endl;
+            return false;
+        }
+
         if (fs.peek() == EOF && has_IEND)
         {
             std::cout << "END" << std::endl;
             return true;
-        } 
-
-        std::cout << "Wrong file ending" << std::endl;
+        } else 
+        {
+            std::cout << "Wrong file ending" << std::endl;  
+        }
     }
+    std::cout << "Stream is in bad state" << std::endl; 
     return false;
 }
+
+bool PNGImage::Impl::extract_image_data(Chunk& chunk)
+{
+    std::cout << "Process IDAT chunk" << std::endl;
+    if (!chunk.empty())
+    {
+        static bool all_data_extracted = false;
+
+        BYTE cmf, flg;
+        chunk >> cmf >> flg;
+        BYTE cm = cmf & 0x0F;
+        BYTE cinfo = (cmf >> 4) & 0x0F;
+        BYTE fcheck = flg & 0x0F;
+        BYTE fdict = (flg >> 4) & 1;
+        BYTE flevel = (flg >> 5) & 0x07;
+
+        std::cout << "cm: "     << std::hex << (int)cm     << "\n"
+                  << "cinfo: "  << std::hex << (int)cinfo  << "\n"
+                  << "fcheck: " << std::hex << (int)fcheck << "\n"
+                  << "fdict: "  << std::hex << (int)fdict  << "\n"
+                  << "flevel: " << std::hex << (int)flevel << "\n";
+
+        return true;
+    }
+
+    return false;
+}
+
 
 bool PNGImage::Impl::is_png_file(std::fstream& fs)
 {
