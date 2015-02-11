@@ -1,22 +1,21 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
-#include <cstdint>
 #include <fstream>
 
 #include "PNGImage.h"
 
 namespace png {
 
-typedef std::uint32_t uint_t;
-typedef std::uint8_t  byte_t;
+typedef unsigned int   uint_t;
+typedef unsigned char  byte_t;
 
 const static int SIGNATURE_SIZE    = 8;
 const static int CHUNK_TYPE_SIZE   = 4;
 const static int CHUNK_LENGTH_SIZE = 4;
 const static int CHUNK_CRC_SIZE    = 4;
 
-const static byte_t PNG_SIGNATURE[] = { -119, 80, 78, 71, 13, 10, 26, 10 };
+const static byte_t PNG_SIGNATURE[] = { 0x89, 0x50, 0x4E, 0x47, 0x0d, 0x0a, 0x1a, 0x0a };
 
 const static uint_t crc_table[] = 
 {
@@ -80,9 +79,7 @@ enum class ChunkType : uint_t
     pHYs = 0x70485973,
     sPLT = 0x73504c54,
     
-    tIME = 0x74494d45,  // Time stamp
-
-    undf = 0x00000000
+    tIME = 0x74494d45  // Time stamp
 };
 
 enum class ColourType : byte_t
@@ -97,100 +94,50 @@ enum class ColourType : byte_t
 // --------------------------------------------------------
 // File read / write support
 
-class FileReader {
+class ImageFIle {
 public:
-    FileReader();
-    ~FileReader();
+    ImageFIle() : ifs(), crc(0)
+    {}
 
-    bool open (const std::string& file);
+    ~ImageFIle() { close(); } 
+
+    bool open (const std::string& file) 
+    {
+        ifs.open(file, std::ios::in | std::ios::binary);
+        return is_open();
+    }
+    
     void close() { if (ifs.is_open()) ifs.close(); }
 
-    bool next_chunk();
-
-    ChunkType chunk_type() const { return type; }
-    uint_t chunk_length() const { return length; }
-
+    void reset_crc() { crc = 0xFFFFFFFF; }
+    uint_t get_crc() const { return crc ^ 0xffffffffL; }
+  
     bool eof() { return ifs.eof() && ifs.peek() != EOF; }
     bool is_open() const { return ifs && ifs.is_open(); }
-    bool end_of_chunk() const { return pos >= length + CHUNK_CRC_SIZE; }
-    bool check_crc();
-
+    
     template <typename T>
     bool read(T& val);
 
-    std::vector<byte_t> read(size_t size);
-
-    size_t skip(size_t count);
-    void skip_chunk();
+    bool read(std::vector<byte_t>& data, size_t size);
+    
+    void skip(size_t count);
 
 private:
-    void reset_crc() { crc = 0xFFFFFFFF; }
-
+    void update_crc(byte_t val);
+    
     std::fstream ifs;
     uint_t       crc;
-    size_t       pos;
-    uint_t       length;
-    ChunkType    type;
 };
 
-FileReader::FileReader() 
-    : ifs(), crc(0), pos(0), length(0), type (ChunkType::undf)
+void ImageFIle::update_crc(byte_t val)
 {
-}
-
-FileReader::~FileReader()
-{
-    close();
-}
-
-bool FileReader::open(const std::string& file)
-{
-    ifs.open(file, std::ios::in | std::ios::binary);
-    return is_open();
-}
-
-bool FileReader::next_chunk()
-{
-    if (ifs.good())
-    {
-        if (!end_of_chunk())
-            skip_chunk();
-
-        read(length);
-        reset_crc();
-        read(type);
-        pos = 0;
-    }
-
-    return ifs.good();
-}
-
-bool FileReader::check_crc()
-{
-    uint_t c = crc, f;
-    read(f);
-
-    return c == f;
-}
-
-size_t FileReader::skip(size_t count)
-{
-    size_t c_pos = ifs.tellg();
-    ifs.seekg(count, std::ios::cur);
-
-    return ifs.tellg() - c_pos;
-}
-
-void FileReader::skip_chunk()
-{
-    if (!end_of_chunk())
-        skip(length - pos + CHUNK_CRC_SIZE);
+    crc = crc_table[(crc ^ val) & 0xff] ^ (crc >> 8);
 }
 
 template <typename T>
-bool FileReader::read_chunk_value(T& val)
+bool ImageFIle::read(T& val)
 {
-    if (ifs.good() && !end_of_chunk())
+    if (!eof())
     {   
         byte_t data[sizeof(T)];
         ifs.read(reinterpret_cast<char*>(&data[0]), sizeof(T));
@@ -198,29 +145,50 @@ bool FileReader::read_chunk_value(T& val)
         for (size_t i = 0; i < sizeof(T); ++i)
         {
             val = (val << 8) | static_cast<T>(data[i]); 
+            update_crc(data[i]);
         }
-        pos += sizeof(T);
     }
-
     return ifs.good();    
 }
 
-std::vector<byte_t> FileReader::read_chunk_value(size_t size)
+template <>
+bool ImageFIle::read(ChunkType& val)
 {
-    std::vector<byte_t> res();
-    if (is_open() && !end_of_chunk())
-    {
-        if (size > length - pos) size = length - pos;
-        res.resize(size);
-        ifs.read(reinterpret_cast<char*>(&res[0]), size);
-        pos += size;
-        return res;
-    }
+    uint_t type;
+    bool res = read(type);
+    val = static_cast<ChunkType>(type);
     return res;
 }
 
+template <>
+bool ImageFIle::read(ColourType& val)
+{
+    byte_t type;
+    bool res = read(type);
+    val = static_cast<ColourType>(type);
+    return res;
+}
+
+bool ImageFIle::read(std::vector<byte_t>& data, size_t size)
+{
+    if (!eof())
+    {
+        data.resize(size);
+        ifs.read(reinterpret_cast<char*>(&data[0]), size);
+	if (!ifs) return false;
+	for (auto& v : data) update_crc(v);
+    }
+    return ifs.good();  
+}
+
+void ImageFIle::skip(size_t count)
+{
+    std::vector<byte_t> tmp(count);
+    read(tmp, count);
+}
+
 template <typename T>
-FileReader& operator >> (FileReader& f, T& val)
+ImageFIle& operator >> (ImageFIle& f, T& val)
 {
     f.read(val);
     return f;
@@ -242,21 +210,25 @@ struct Header {
     Header() : width(0), height (0), bit_depth(0), colour_type(ColourType::ATrueColour), compression(0), filter(0), interlace(0)
     {}
 
-    bool from_file(FileReader& file);
+    bool from_file(ImageFIle& file);
 };
 
-bool Header::from_file(FileReader& file)
+bool Header::from_file(ImageFIle& file)
 {
     if (!file.is_open() || file.eof()) return false;
-    file.next_chunk();
 
-    if (file.chunk_length() <= 0) 
+    uint_t length, type;
+    file.read(length);
+    file.reset_crc();
+    file.read(type);
+    
+    if (length <= 0) 
     {
         std::cout << "Wrong header chunk size" << std::endl;
         return false;
     }
 
-    if (static_cast<ChunkType>(file.chunk_type()) != ChunkType::IHDR) 
+    if (static_cast<ChunkType>(type) != ChunkType::IHDR) 
     {
         std::cout << "Wrong header chunk type" << std::endl;
         return false;
@@ -264,15 +236,18 @@ bool Header::from_file(FileReader& file)
 
     std::cout << "Parsing header" << std::endl;
 
-    file >> width 
-           >> height
-           >> bit_depth  
-           >> colour_type
-           >> compression
-           >> filter     
-           >> interlace;   
+    file  >> width 
+	  >> height
+	  >> bit_depth  
+	  >> colour_type
+	  >> compression
+	  >> filter     
+	  >> interlace;   
+    
+    uint_t data_crc = file.get_crc();
+    uint_t file_crc; file >> file_crc;
 
-    if (file.check_crc())
+    if (file_crc != data_crc)
     {
         std::cout << "Checksum does not match" << std::endl;
         return false;   
@@ -322,13 +297,13 @@ bool Header::from_file(FileReader& file)
         return false; 
     }
 
-    std::cout << "\twidth: " << std::dec << width << "\n"
-              << "\theight: " << std::dec << height << "\n"
-              << "\tbit_depth: " << std::hex << (int)bit_depth << "\n"
+    std::cout << "\twidth: "       << std::dec << width            << "\n"
+              << "\theight: "      << std::dec << height           << "\n"
+              << "\tbit_depth: "   << std::hex << (int)bit_depth   << "\n"
               << "\tcolour_type: " << std::hex << (int)colour_type << "\n"
               << "\tcompression: " << std::hex << (int)compression << "\n"
-              << "\tfilter: " << std::hex << (int)filter << "\n"
-              << "\tinterlace: " << std::hex << (int)interlace << std::endl;
+              << "\tfilter: "      << std::hex << (int)filter      << "\n"
+              << "\tinterlace: "   << std::hex << (int)interlace   << std::endl;
 
     return true;
 }
@@ -350,15 +325,15 @@ struct PNGImage::Impl {
     Impl() : head(), palette(), data()
     {}
     
-    bool from_file(FileReader& file);
+    bool from_file(ImageFIle& file);
 
-    bool is_png_file(FileReader& file);
+    bool is_png_file(ImageFIle& file);
 
-    bool inflate(FileReader& file);
+    bool inflate(ImageFIle& file);
 
 };
 
-bool PNGImage::Impl::from_file(FileReader& file)
+bool PNGImage::Impl::from_file(ImageFIle& file)
 {
     if (file.is_open())
     {
@@ -370,8 +345,13 @@ bool PNGImage::Impl::from_file(FileReader& file)
         bool has_PLTE = false;
         while (!file.eof())                        // read image data
         {           
-            file.next_chunk();
-            switch (file.chunk_type())
+            uint_t length; file.read(length);
+	    file.reset_crc();
+	    ChunkType type; file.read(type);
+
+	    std::cout << "Chunk: " << std::hex << static_cast<uint_t>(type) << std::endl;
+	    
+            switch (type)
             {
                 case ChunkType::IDAT :
                     has_IDAT = inflate(file);
@@ -383,6 +363,8 @@ bool PNGImage::Impl::from_file(FileReader& file)
 
                 default:
                     std::cout << "\tNo implemented action" << std::endl;
+		    file.skip(length + CHUNK_CRC_SIZE);
+		    break;
             }
         }   
         
@@ -406,25 +388,24 @@ bool PNGImage::Impl::from_file(FileReader& file)
     return false;
 }
 
-bool PNGImage::Impl::is_png_file(FileReader& file)
+bool PNGImage::Impl::is_png_file(ImageFIle& file)
 {
-    std::vector<byte_t> file_sign = file.read(SIGNATURE_SIZE);
-    return std::equal(file_sign.begin(), file_sign.end(), PNG_SIGNATURE);
+    std::vector<byte_t> file_sign;
+    return file.read(file_sign, SIGNATURE_SIZE) && std::equal(file_sign.begin(), file_sign.end(), PNG_SIGNATURE);
 }
 
-bool PNGImage::Impl::inflate(FileReader& file)
+bool PNGImage::Impl::inflate(ImageFIle& file)
 {
     std::cout << "Process IDAT chunk" << std::endl;
-    if (!chunk.empty())
+    if (file.is_open() && !file.eof())
     {
-        static bool all_data_extracted = false;
 
         byte_t cmf, flg;
-        chunk >> cmf >> flg;
-        byte_t cm = cmf & 0x0F;
-        byte_t cinfo = (cmf >> 4) & 0x0F;
+        file >> cmf >> flg;
+        byte_t cm     = cmf & 0x0F;
+        byte_t cinfo  = (cmf >> 4) & 0x0F;
         byte_t fcheck = flg & 0x0F;
-        byte_t fdict = (flg >> 4) & 1;
+        byte_t fdict  = (flg >> 4) & 1;
         byte_t flevel = (flg >> 5) & 0x07;
 
         std::cout << "cm: "     << std::hex << (int)cm     << "\n"
@@ -490,7 +471,7 @@ bool PNGImage::create(size_t Width, size_t height)
 
 bool PNGImage::open(const std::string& file_name)
 {
-    FileReader file;
+    ImageFIle file;
     if (file.open(file_name))
     {
         pImpl.reset(new Impl);
