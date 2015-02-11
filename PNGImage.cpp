@@ -90,47 +90,23 @@ enum class ColourType : BYTE
     ATrueColour = 6
 };
 
-template<typename T, long N = sizeof(T)>
-T read_value (std::fstream& fs)
-{
-    T value {};
-    BYTE data[N];
-    fs.read(reinterpret_cast<char*>(&data[0]), N);
-
-    for (size_t i = 0; i < N; ++i)
-    {
-        value = (value << 8) | static_cast<T>(data[i]);
-    }
-    return value;
-}
-
-
-// Return the CRC of the bytes 
-unsigned int CRC(const std::vector<BYTE>& buf)
-{
-    // CRC should be initialized to all 1's, and the transmitted value
-    // is the 1's complement of the final running CRC
-    unsigned long c = 0xffffffffL;
-    for (size_t n = 0; n < buf.size(); n++) {
-        c = crc_table[(c ^ buf[n]) & 0xff] ^ (c >> 8);
-    }
-    return c ^ 0xffffffffL;
-}
-
 // --------------------------------------------------------
 // File read / write support
 
-  class ImageFile {
-  public:
-    bool open(const std::string& file_name);
-    void close();
+class ImageFile {
+public:
+    ImageFile();
+    ~ImageFile();
 
-    bool eof();
-    bool is_open();
+    inline bool open(const std::string& file_name);
+    inline void close();
 
-    unsigned int current_crc();
-    void reset_crc();
-    
+    inline bool eof();
+    inline bool is_open();
+
+    inline unsigned int current_crc();
+    inline void reset_crc();
+
     template <typename T>
     friend ImageFile& operator >> (ImageFile& f, T& val);
 
@@ -138,25 +114,81 @@ unsigned int CRC(const std::vector<BYTE>& buf)
     friend ImageFile& operator << (ImageFile& f, T& val);
 
     std::vector<BYTE> read(size_t size);
-  private:
+    void write(const std::vector<BYTE>& data);
+
+
+private:
     std::fstream file_;
-  };
+    unsigned int cur_crc;
+};
 
+ImageFile::ImageFile() : file_(), cur_crc(0)
+{}
 
-template<typename T>
-ImageFile& operator >> (ImageFile& file, T& val)
+ImageFile::~ImageFile()
 {
-    size_t size = sizeof(T);
-    if (ch.data_.size() > 0 && (ch.position_ + size) <= ch.data_.size())
-    {   
-        val = {};
-        for (size_t i = 0; i < size; ++i)
-        {
-            val = (val << 8) | static_cast<T>(ch.data_[ch.position_ + i]); 
-        }
-        ch.position_ += size;
+    if (is_open())
+    {
+        file_.close();
     }
-    return ch;
+}
+
+bool ImageFile::eof()
+{
+    return !file_ || file_.peek() == EOF;
+}
+
+bool ImageFile::is_open()
+{
+    return file_ && file_.is_open();
+}
+
+bool ImageFile::open(const std::string& file_name)
+{
+    if (is_open()) close();
+    file_.clear();
+    file_.open(file_name, std::ios::in | std::ios::binary);
+
+    return is_open();
+}
+
+void ImageFile::close()
+{
+    if (is_open()) close();
+}
+
+unsigned int ImageFile::current_crc()
+{
+
+
+}
+
+void ImageFile::reset_crc()
+{
+    cur_crc = 0xffffffff;   
+}
+
+template <typename T>
+ImageFile& operator >> (ImageFile& f, T& val)
+{
+    if (!f.eof())
+    {   
+        BYTE data[sizeof(T)];
+        f.file_.read(reinterpret_cast<char*>(&data[0]), sizeof(T));
+        val = {};
+        for (size_t i = 0; i < sizeof(T); ++i)
+        {
+            val = (val << 8) | static_cast<T>(data[i]); 
+        }
+    }
+    return f;
+}
+
+template <typename T>
+ImageFile& operator << (ImageFile& f, T& val)
+{
+    throw NotImplemented();
+    return f;
 }
 
 // --------------------------------------------------------
@@ -174,27 +206,25 @@ struct Header {
     Header() : width(0), height (0), bit_depth(0), colour_type(0), compression(0), filter(0), interlace(0)
     {}
 
-    bool from_stream(std::fstream& fs);
+    bool from_file(ImageFile& file);
 };
 
-bool Header::from_stream(std::fstream& fs)
+bool Header::from_file(ImageFile& file)
 {
-    if (!fs) return false;
+    if (!file.is_open() || file.eof()) return false;
 
-    Chunk chunk;
-    if (!chunk.read_from(fs)) 
-    {
-        std::cout << "Can't read header chunk" << std::endl;
-        return false;  
-    }
+    unsigned int length, type;
+    file >> length;
+    file.reset_crc();
+    file >> type;
 
-    if (chunk.empty() || chunk.length() <= 0) 
+    if (length <= 0) 
     {
         std::cout << "Wrong header chunk size" << std::endl;
         return false;
     }
 
-    if (chunk.type() != ChunkType::IHDR) 
+    if (static_cast<ChunkType>(type) != ChunkType::IHDR) 
     {
         std::cout << "Wrong header chunk type" << std::endl;
         return false;
@@ -202,13 +232,22 @@ bool Header::from_stream(std::fstream& fs)
 
     std::cout << "Parsing header" << std::endl;
 
-    chunk >> width 
-          >> height
-          >> bit_depth  
-          >> colour_type
-          >> compression
-          >> filter     
-          >> interlace;   
+    file >> width 
+         >> height
+         >> bit_depth  
+         >> colour_type
+         >> compression
+         >> filter     
+         >> interlace;   
+
+    unsigned int data_crc = file.current_crc();
+    unsigned int file_crc;
+    file >> file_crc;
+    if (data_crc != file_crc)
+    {
+        std::cout << "Checksum does not match" << std::endl;
+        return false;   
+    }
 
     if (width <= 0 || height <= 0) 
     {
@@ -293,7 +332,7 @@ bool PNGImage::Impl::from_file(ImageFile& file)
     if (file.is_open())
     {
         if (!is_png_file(file)) return false;      // check signature 
-        if (!head.from_stream(file)) return false; // read header
+        if (!head.from_file(file)) return false;   // read header
 
         bool has_IEND = false;
         bool has_IDAT = false;
