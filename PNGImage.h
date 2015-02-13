@@ -9,19 +9,20 @@ namespace png {
 
 class PNGImage {
 public:
-    PNGImage() noexcept;
+    PNGImage();
     
     PNGImage(const PNGImage& other);
-    PNGImage(PNGImage&& other) noexcept;
+    PNGImage(PNGImage&& other);
     
     PNGImage& operator= (const PNGImage& other);
-    PNGImage& operator= (PNGImage&& other) noexcept;
+    PNGImage& operator= (PNGImage&& other);
     
     ~PNGImage();
     
     bool open (const std::string& file_name);
     bool create (size_t width, size_t height);
     bool save_as (const std::string& file_name);
+
     
     
 private:

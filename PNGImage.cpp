@@ -2,6 +2,7 @@
 #include <vector>
 #include <algorithm>
 #include <fstream>
+#include <cmath>
 
 #include "PNGImage.h"
 
@@ -244,8 +245,7 @@ bool Header::from_file(ImageFIle& file)
          >> filter     
          >> interlace;   
     
-    
-
+    // check image size
     if (!check_crc(file))
     {
         std::cout << "Checksum does not match" << std::endl;
@@ -258,6 +258,7 @@ bool Header::from_file(ImageFIle& file)
         return false; 
     }
 
+    // check color type and bit depth
     std::vector<byte_t> allowed_bit_depths;
 
     switch (static_cast<ColourType>(colour_type))
@@ -284,12 +285,21 @@ bool Header::from_file(ImageFIle& file)
         return false; 
     }
 
+    // only compression method 0 (deflate/inflate) is defined in International Standard
+    if (compression != 0)
+    {
+        std::cout << "Compressoin type " << compression << " not allowed" << std::endl;
+        return false; 
+    }
+
+    // only filter method 0 (adaptive filtering with five basic filter types) is defined in International Standard
     if (filter != 0)
     {
         std::cout << "Filter type " << filter << " not allowed" << std::endl;
         return false; 
     }
 
+    // transmission order of the image data : 0 (no interlace) or 1 (Adam7 interlace)
     if (interlace != 0 && interlace != 1)
     {
         std::cout << "Interlace method " << interlace << " not allowed" << std::endl;
@@ -336,7 +346,11 @@ bool PNGImage::Impl::from_file(ImageFIle& file)
 {
     if (file.is_open())
     {
-        if (!is_png_file(file)) return false;      // check signature 
+        if (!is_png_file(file))                    // check signature 
+        {
+            std::cout << "Is not PNG file" << std::endl;
+            return false;      
+        }
         if (!head.from_file(file)) return false;   // read header
 
         bool has_IEND = false;
@@ -399,6 +413,8 @@ bool PNGImage::Impl::is_png_file(ImageFIle& file)
 
 bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
 {
+    static bool all_data = false;
+    const size_t MAX_WINDOW_SIZE = 32768;
     std::cout << "Process IDAT chunk" << std::endl;
     if (file.is_open() && !file.eof())
     {
@@ -407,11 +423,20 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
         file >> cmf >> flg;
         byte_t cm     = cmf & 0x0F;
         byte_t cinfo  = (cmf >> 4) & 0x0F;
-        byte_t fcheck = flg & 0x0F;
-        byte_t fdict  = (flg >> 4) & 1;
-        byte_t flevel = (flg >> 5) & 0x07;
+        byte_t fcheck = flg & 0x1F;
+        byte_t fdict  = (flg >> 5) & 1;
+        byte_t flevel = (flg >> 6) & 0x03;
 
-        std::cout << "\tcm: "     << std::hex << (int)cm     << "\n"
+        size_t window_size = pow(2, (cinfo + 8));
+
+        // CM = 8 denotes the "deflate" compression method
+        // fdict = 0, The additional flags shall not specify a preset dictionary 
+        if ((cmf * 256 + flg) % 31 != 0 || cm != 8 || window_size > MAX_WINDOW_SIZE || fdict != 0)
+        {
+            std::cout << "Wrong compression params" << std::endl;
+        }
+
+        std::cout << "\tcm: "    << std::hex << (int)cm     << "\n"
                   << "\tcinfo: "  << std::hex << (int)cinfo  << "\n"
                   << "\tfcheck: " << std::hex << (int)fcheck << "\n"
                   << "\tfdict: "  << std::hex << (int)fdict  << "\n"
@@ -427,7 +452,7 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
 // --------------------------------------------------------
 // PNGImage interface
 
-PNGImage::PNGImage() noexcept : pImpl(nullptr) 
+PNGImage::PNGImage() : pImpl(new Impl()) 
 {
 
 }
@@ -437,7 +462,7 @@ PNGImage::PNGImage(const PNGImage& other) : pImpl(new Impl(*other.pImpl.get()))
 
 }
 
-PNGImage::PNGImage(PNGImage&& other) noexcept : pImpl(nullptr)
+PNGImage::PNGImage(PNGImage&& other) : pImpl(new Impl())
 {
     pImpl.swap(other.pImpl);
 }
@@ -452,13 +477,13 @@ PNGImage& PNGImage::operator= (const PNGImage& other)
     return *this;
 }
 
-PNGImage& PNGImage::operator= (PNGImage&& other) noexcept
+PNGImage& PNGImage::operator= (PNGImage&& other)
 {
     if (&other == this) return *this;
     
-    pImpl.reset();
-    std::swap(pImpl, other.pImpl);
-    
+    pImpl.swap(other.pImpl);
+    other.pImpl.reset(new Impl());
+
     return *this;
 }
 
@@ -478,8 +503,12 @@ bool PNGImage::open(const std::string& file_name)
     ImageFIle file;
     if (file.open(file_name))
     {
-        pImpl.reset(new Impl);
-        return pImpl->from_file(file);
+        PNGImage tmp;
+        if (tmp.pImpl->from_file(file))
+        {
+            pImpl.swap(tmp.pImpl);  
+            return true; 
+        }
     }
     return false;
 }
