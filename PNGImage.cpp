@@ -414,11 +414,44 @@ bool PNGImage::Impl::is_png_file(ImageFIle& file)
 bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
 {
     static bool all_data = false;
+    
+    static const size_t uncompressed_block_limit = 65535;
+    
     const size_t MAX_WINDOW_SIZE = 32768;
     std::cout << "Process IDAT chunk" << std::endl;
     if (file.is_open() && !file.eof())
     {
 
+        /*
+          do
+               read block header from input stream.
+               if stored with no compression
+                  skip any remaining bits in current partially
+                     processed byte
+                  read LEN and NLEN (see next section)
+                  copy LEN bytes of data to output
+               otherwise
+                  if compressed with dynamic Huffman codes
+                     read representation of code trees (see
+                        subsection below)
+                  loop (until end of block code recognized)
+                     decode literal/length value from input stream
+                     if value < 256
+                        copy value (literal byte) to output stream
+                     otherwise
+                        if value = end of block (256)
+                           break from loop
+                        otherwise (value = 257..285)
+                           decode distance from input stream
+
+                           move backwards distance bytes in the output
+                           stream, and copy length bytes from this
+                           position to the output stream.
+                  end loop
+            while not last block
+         */
+        
+        
         byte_t cmf, flg;
         file >> cmf >> flg;
         byte_t cm     = cmf & 0x0F;
@@ -428,7 +461,11 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
         byte_t flevel = (flg >> 6) & 0x03;
 
         size_t window_size = pow(2, (cinfo + 8));
+        
+        const int BFINAL = 1;
 
+        enum {BTYPE_NO, BTYPE_FIXED, BTYPE_DYNAMIC, BTYPE_ERROR  };
+        
         // CM = 8 denotes the "deflate" compression method
         // fdict = 0, The additional flags shall not specify a preset dictionary 
         if ((cmf * 256 + flg) % 31 != 0 || cm != 8 || window_size > MAX_WINDOW_SIZE || fdict != 0)
@@ -443,6 +480,22 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
                   << "\tflevel: " << std::hex << (int)flevel << "\n";
 
         file.skip(length - 2 + CHUNK_CRC_SIZE);
+        
+        // 72 49 4D CB 49 2C 49 55 00;
+        
+        byte_t data[] = {0x72, 0x49, 0x4D, 0xCB, 0x49, 0x2C, 0x49, 0x55, 0x00};
+        
+        for (int i = 0; i < 9; ++i)
+        {
+            byte_t byte = data[i];
+            for (int bp = 0; bp < 8; ++bp)
+            {
+                
+            }
+        }
+        
+        
+        
         return true;
     }
 
