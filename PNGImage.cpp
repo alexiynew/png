@@ -426,8 +426,7 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
           do
                read block header from input stream.
                if stored with no compression
-                  skip any remaining bits in current partially
-                     processed byte
+                  skip any remaining bits in current partially processed byte
                   read LEN and NLEN (see next section)
                   copy LEN bytes of data to output
                otherwise
@@ -485,12 +484,37 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
         
         byte_t data[] = {0x72, 0x49, 0x4D, 0xCB, 0x49, 0x2C, 0x49, 0x55, 0x00};
         
+        bool begin_block = true;
+        bool last_block = false;
+        byte_t btype = BTYPE_ERROR;
+
         for (int i = 0; i < 9; ++i)
         {
             byte_t byte = data[i];
-            for (int bp = 0; bp < 8; ++bp)
+            int bp = 0;
+            while (bp < 8)
             {
-                
+                if (begin_block) 
+                {
+                    last_block = (byte >> bp) && BFINAL; bp++;
+                    btype = (byte >> bp) && 0x03;
+                }  
+
+                if (btype == BTYPE_NO)  
+                {
+                    std::cout << "BTYPE_NO" << std::endl;
+                } else
+                if (btype == BTYPE_FIXED)
+                {
+                    std::cout << "BTYPE_FIXED" << std::endl;
+                } else
+                if (btype == BTYPE_DYNAMIC)
+                {
+                    std::cout << "BTYPE_DYNAMIC" << std::endl;
+                } else 
+                {
+                    std::cout << "Error" << std::endl;
+                }
             }
         }
         
