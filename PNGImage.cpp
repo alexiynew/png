@@ -95,12 +95,12 @@ enum class ColourType : byte_t
 // --------------------------------------------------------
 // File read / write support
 
-class ImageFIle {
+class ImageFile {
 public:
-    ImageFIle() : ifs(), crc(0)
+    ImageFile() : ifs(), crc(0)
     {}
 
-    ~ImageFIle() { close(); } 
+    ~ImageFile() { close(); } 
 
     bool open (const std::string& file) 
     {
@@ -130,13 +130,13 @@ private:
     uint_t       crc;
 };
 
-void ImageFIle::update_crc(byte_t val)
+void ImageFile::update_crc(byte_t val)
 {
     crc = crc_table[(crc ^ val) & 0xff] ^ (crc >> 8);
 }
 
 template <typename T>
-void ImageFIle::read(T& val)
+void ImageFile::read(T& val)
 {
     if (!eof())
     {   
@@ -152,20 +152,20 @@ void ImageFIle::read(T& val)
 }
 
 template <>
-void ImageFIle::read(ChunkType& val)
+void ImageFile::read(ChunkType& val)
 {
     uint_t type; read(type);
     val = static_cast<ChunkType>(type);
 }
 
 template <>
-void ImageFIle::read(ColourType& val)
+void ImageFile::read(ColourType& val)
 {
     byte_t type; read(type);
     val = static_cast<ColourType>(type);
 }
 
-void ImageFIle::read(std::vector<byte_t>& data, size_t size)
+void ImageFile::read(std::vector<byte_t>& data, size_t size)
 {
     if (!eof())
     {
@@ -175,25 +175,48 @@ void ImageFIle::read(std::vector<byte_t>& data, size_t size)
     }
 }
 
-void ImageFIle::skip(size_t count)
+void ImageFile::skip(size_t count)
 {
     std::cout << std::dec << "\tskip " <<  count << "\n";
     ifs.seekg(count, std::ios::cur);
 }
 
 template <typename T>
-ImageFIle& operator >> (ImageFIle& f, T& val)
+ImageFile& operator >> (ImageFile& f, T& val)
 {
     f.read(val);
     return f;
 }
 
-bool check_crc(ImageFIle& file)
+bool check_crc(ImageFile& file)
 {   
     uint_t data_crc = file.get_crc();
     uint_t file_crc; file >> file_crc;
     return file_crc == data_crc;
 }
+
+
+struct BitStream {
+    BitStream(std::vector<byte_t> f) : file(f), buf(0), bpos(0)
+    {
+        if (f.size() > 0) buf += file[0];
+        if (f.size() > 1) buf += (file[1] << 8);
+        if (f.size() > 2) buf += (file[2] << 16);
+        if (f.size() > 3) buf += (file[3] << 24);
+    }
+
+    template <typename size_t N>
+    uint_t get ()
+    {
+        static_assert(N > 0 && N <= sizeof(unit_t));
+        unit_t val = 0;
+    }
+
+private:
+    std::vector<byte_t>& file;
+    uint_t buf;
+    size_t bpos;
+};
 
 
 // --------------------------------------------------------
@@ -211,10 +234,10 @@ struct Header {
     Header() : width(0), height (0), bit_depth(0), colour_type(ColourType::ATrueColour), compression(0), filter(0), interlace(0)
     {}
 
-    bool from_file(ImageFIle& file);
+    bool from_file(ImageFile& file);
 };
 
-bool Header::from_file(ImageFIle& file)
+bool Header::from_file(ImageFile& file)
 {
     if (!file.is_open() || file.eof()) return false;
 
@@ -334,15 +357,15 @@ struct PNGImage::Impl {
     Impl() : head(), palette(), data()
     {}
     
-    bool from_file(ImageFIle& file);
+    bool from_file(ImageFile& file);
 
-    bool is_png_file(ImageFIle& file);
+    bool is_png_file(ImageFile& file);
 
-    bool inflate(ImageFIle& file, size_t length);
+    bool inflate(ImageFile& file, size_t length);
 
 };
 
-bool PNGImage::Impl::from_file(ImageFIle& file)
+bool PNGImage::Impl::from_file(ImageFile& file)
 {
     if (file.is_open())
     {
@@ -404,14 +427,14 @@ bool PNGImage::Impl::from_file(ImageFIle& file)
     return false;
 }
 
-bool PNGImage::Impl::is_png_file(ImageFIle& file)
+bool PNGImage::Impl::is_png_file(ImageFile& file)
 {
     std::vector<byte_t> file_sign;
     file.read(file_sign, SIGNATURE_SIZE);
     return std::equal(file_sign.begin(), file_sign.end(), PNG_SIGNATURE);
 }
 
-bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
+bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 {
     static bool all_data = false;
     
@@ -449,6 +472,40 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
                   end loop
             while not last block
          */
+
+        /*
+              Extra               Extra               Extra
+            Code Bits Length(s) Code Bits Lengths   Code Bits Length(s)
+            ---- ---- ------     ---- ---- -------   ---- ---- -------
+             257   0     3       267   1   15,16     277   4   67-82
+             258   0     4       268   1   17,18     278   4   83-98
+             259   0     5       269   2   19-22     279   4   99-114
+             260   0     6       270   2   23-26     280   4  115-130
+             261   0     7       271   2   27-30     281   5  131-162
+             262   0     8       272   2   31-34     282   5  163-194
+             263   0     9       273   3   35-42     283   5  195-226
+             264   0    10       274   3   43-50     284   5  227-257
+             265   1  11,12      275   3   51-58     285   0    258
+             266   1  13,14      276   3   59-66
+
+        */
+    /*
+
+    
+                  Extra           Extra               Extra
+             Code Bits Dist  Code Bits   Dist     Code Bits Distance
+             ---- ---- ----  ---- ----  ------    ---- ---- --------
+               0   0    1     10   4     33-48    20    9   1025-1536
+               1   0    2     11   4     49-64    21    9   1537-2048
+               2   0    3     12   5     65-96    22   10   2049-3072
+               3   0    4     13   5     97-128   23   10   3073-4096
+               4   1   5,6    14   6    129-192   24   11   4097-6144
+               5   1   7,8    15   6    193-256   25   11   6145-8192
+               6   2   9-12   16   7    257-384   26   12  8193-12288
+               7   2  13-16   17   7    385-512   27   12 12289-16384
+               8   3  17-24   18   8    513-768   28   13 16385-24576
+               9   3  25-32   19   8   769-1024   29   13 24577-32768
+    */
         
         
         byte_t cmf, flg;
@@ -487,6 +544,7 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
         bool begin_block = true;
         bool last_block = false;
         byte_t btype = BTYPE_ERROR;
+        unsigned short code = 0;
 
         for (int i = 0; i < 9; ++i)
         {
@@ -503,10 +561,42 @@ bool PNGImage::Impl::inflate(ImageFIle& file, size_t length)
                 if (btype == BTYPE_NO)  
                 {
                     std::cout << "BTYPE_NO" << std::endl;
+/*
+
+    Any bits of input up to the next byte boundary are ignored.
+         The rest of the block consists of the following information:
+
+              0   1   2   3   4...
+            +---+---+---+---+================================+
+            |  LEN  | NLEN  |... LEN bytes of literal data...|
+            +---+---+---+---+================================+
+
+         LEN is the number of data bytes in the block.  NLEN is the
+         one's complement of LEN.
+*/
+
                 } else
                 if (btype == BTYPE_FIXED)
                 {
                     std::cout << "BTYPE_FIXED" << std::endl;
+
+/*
+    Lit Value    Bits        Codes
+   ---------    ----        -----
+     0 - 143     8          00110000 through
+                            10111111
+   144 - 255     9          110010000 through
+                            111111111
+   256 - 279     7          0000000 through
+                            0010111
+   280 - 287     8          11000000 through
+                            11000111
+*/
+                    code
+                    
+
+
+                    exit(0);
                 } else
                 if (btype == BTYPE_DYNAMIC)
                 {
@@ -577,7 +667,7 @@ bool PNGImage::create(size_t Width, size_t height)
 
 bool PNGImage::open(const std::string& file_name)
 {
-    ImageFIle file;
+    ImageFile file;
     if (file.open(file_name))
     {
         PNGImage tmp;
