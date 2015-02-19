@@ -9,7 +9,9 @@
 namespace png {
 
 typedef unsigned int   uint_t;
+typedef unsigned short ushort_t;
 typedef unsigned char  byte_t;
+
 
 const static int SIGNATURE_SIZE    = 8;
 const static int CHUNK_TYPE_SIZE   = 4;
@@ -197,25 +199,45 @@ bool check_crc(ImageFile& file)
 
 
 struct BitStream {
-    BitStream(std::vector<byte_t> f) : file(f), buf(0), bpos(0)
+    BitStream(std::vector<byte_t> f) : file(f), buf(0), bpos(0), dpos(0)
     {
-        if (f.size() > 0) buf += file[0];
-        if (f.size() > 1) buf += (file[1] << 8);
-        if (f.size() > 2) buf += (file[2] << 16);
-        if (f.size() > 3) buf += (file[3] << 24);
+        if (!eof()) buf += file[dpos++];
+        if (!eof()) buf += (file[dpos++] << 8);
+        if (!eof()) buf += (file[dpos++] << 16);
+        if (!eof()) buf += (file[dpos++] << 24);
     }
 
-    template <typename size_t N>
-    uint_t get ()
-    {
-        static_assert(N > 0 && N <= sizeof(unit_t));
+    ushort_t get (size_t count)
+    {   
+        assert(count > 0 && count <= sizeof(ushort_t) * 8);
         unit_t val = 0;
+
+        ushort_t res = static_cast<ushort_t>((buf >> bpos) & mask[count]);
+        bpos += count;
+        while (bpos > 8)
+        {
+            buf >>= 8; bpos -= 8;
+            if (!eof()) buf += (file[dpos++] << 24);
+        }
+
+        return res;
     }
+
+    bool eof() { return dpos >= data.size(); }
+
+    static const ushort_t mask[] = {
+        0x0000, 0x0001, 0x0003, 0x0007,
+        0x000F, 0x001F, 0x003F, 0x007F,
+        0x00FF, 0x01FF, 0x03FF, 0x07FF,
+        0x0FFF, 0x1FFF, 0x3FFF, 0x7FFF,
+        0xFFFF
+    };
 
 private:
     std::vector<byte_t>& file;
     uint_t buf;
     size_t bpos;
+    size_t dpos;
 };
 
 
