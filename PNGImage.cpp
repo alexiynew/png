@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <cmath>
+#include <cassert>
 
 #include "PNGImage.h"
 
@@ -56,6 +57,13 @@ const static uint_t crc_table[] =
     0xB3667A2E, 0xC4614AB8, 0x5D681B02, 0x2A6F2B94, 0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D
 };
 
+static const ushort_t bit_mask[] = {
+    0x0000, 0x0001, 0x0003, 0x0007,
+    0x000F, 0x001F, 0x003F, 0x007F,
+    0x00FF, 0x01FF, 0x03FF, 0x07FF,
+    0x0FFF, 0x1FFF, 0x3FFF, 0x7FFF,
+    0xFFFF
+};
 
 enum class ChunkType : uint_t
 {
@@ -205,14 +213,15 @@ struct BitStream {
         if (!eof()) buf += (file[dpos++] << 8);
         if (!eof()) buf += (file[dpos++] << 16);
         if (!eof()) buf += (file[dpos++] << 24);
+        std::cout << std::hex << buf << std::endl;
     }
 
     ushort_t get (size_t count)
     {   
         assert(count > 0 && count <= sizeof(ushort_t) * 8);
-        unit_t val = 0;
+        uint_t val = 0;
 
-        ushort_t res = static_cast<ushort_t>((buf >> bpos) & mask[count]);
+        ushort_t res = static_cast<ushort_t>((buf >> bpos) & bit_mask[count]);
         bpos += count;
         while (bpos > 8)
         {
@@ -223,15 +232,7 @@ struct BitStream {
         return res;
     }
 
-    bool eof() { return dpos >= data.size(); }
-
-    static const ushort_t mask[] = {
-        0x0000, 0x0001, 0x0003, 0x0007,
-        0x000F, 0x001F, 0x003F, 0x007F,
-        0x00FF, 0x01FF, 0x03FF, 0x07FF,
-        0x0FFF, 0x1FFF, 0x3FFF, 0x7FFF,
-        0xFFFF
-    };
+    bool eof() { return dpos >= file.size(); }
 
 private:
     std::vector<byte_t>& file;
@@ -559,30 +560,28 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 
         file.skip(length - 2 + CHUNK_CRC_SIZE);
         
-        // 72 49 4D CB 49 2C 49 55 00;
+        /*
+		 *      0b01110011, 0b01001001, 0b01001101, 0b11001011, 
+				0b01001001, 0b00101100, 0b01001001, 0b01010101, 
+				0b00000000, 0b00010001, 0b00000000, 
+		 * */
         
-        byte_t data[] = {0x72, 0x49, 0x4D, 0xCB, 0x49, 0x2C, 0x49, 0x55, 0x00};
+        std::vector<byte_t> data = {0b01110011, 0b01001001, 0b01001101, 0b11001011, 
+									0b01001001, 0b00101100, 0b01001001, 0b01010101, 
+									0b00000000, 0b00010001, 0b00000000};
         
         bool begin_block = true;
-        bool last_block = false;
         byte_t btype = BTYPE_ERROR;
-        unsigned short code = 0;
+        std::vector<byte_t> result;
 
-        for (int i = 0; i < 9; ++i)
+        BitStream bs(data);
+        bool last_block = bs.get(1) && BFINAL;
+
+        btype = bs.get(2);
+
+        if (btype == BTYPE_NO)  
         {
-            byte_t byte = data[i];
-            int bp = 0;
-            while (bp < 8)
-            {
-                if (begin_block) 
-                {
-                    last_block = (byte >> bp) && BFINAL; bp++;
-                    btype = (byte >> bp) && 0x03;
-                }  
-
-                if (btype == BTYPE_NO)  
-                {
-                    std::cout << "BTYPE_NO" << std::endl;
+            std::cout << "BTYPE_NO" << std::endl;
 /*
 
     Any bits of input up to the next byte boundary are ignored.
@@ -597,10 +596,10 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
          one's complement of LEN.
 */
 
-                } else
-                if (btype == BTYPE_FIXED)
-                {
-                    std::cout << "BTYPE_FIXED" << std::endl;
+        } else
+        if (btype == BTYPE_FIXED)
+        {
+            std::cout << "BTYPE_FIXED" << std::endl;
 
 /*
     Lit Value    Bits        Codes
@@ -614,22 +613,33 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
    280 - 287     8          11000000 through
                             11000111
 */
-                    code
-                    
+         
+			ushort_t code = bs.get(7);
+			if (code >= 0b0000000 && code <= 0b0010111) 
+			{	
+				std::cout << "lenght-dist" << std::endl;
+				exit(0);
+			}
+			
+			code = (code << 1) + bs.get(1);
+			if (code >= 0x30 && code <= 0xBF)
+			{
+				result.push_back(code - 0x30);
+			} else if (code >= 0xC0 && code <= 0xC7)
+			{
+				std::cout << "lenght-dist" << std::endl;
+			}
 
-
-                    exit(0);
-                } else
-                if (btype == BTYPE_DYNAMIC)
-                {
-                    std::cout << "BTYPE_DYNAMIC" << std::endl;
-                } else 
-                {
-                    std::cout << "Error" << std::endl;
-                }
-            }
+			std::cout << result[0] << std::endl;
+            exit(0);
+        } else
+        if (btype == BTYPE_DYNAMIC)
+        {
+            std::cout << "BTYPE_DYNAMIC" << std::endl;
+        } else 
+        {
+            std::cout << "Error" << std::endl;
         }
-        
         
         
         return true;
