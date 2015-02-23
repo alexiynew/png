@@ -65,6 +65,7 @@ static const ushort_t bit_mask[] = {
     0xFFFF
 };
 
+
 enum class ChunkType : uint_t
 {
     IHDR = 0x49484452,  // Image header
@@ -161,6 +162,19 @@ void ImageFile::read(T& val)
     }   
 }
 
+template <typename T>
+T reverce_bits(const T& v, size_t count)
+{
+	T buf{};
+	for (size_t i = 0; i < count; ++i)
+	{
+		buf = (buf << 1) + ((v >> i) & 1);
+	}
+		
+	return buf;
+}
+
+
 template <>
 void ImageFile::read(ChunkType& val)
 {
@@ -219,23 +233,33 @@ struct BitStream {
     ushort_t get (size_t count)
     {   
         assert(count > 0 && count <= sizeof(ushort_t) * 8);
-        uint_t val = 0;
-
+		if (eof()) return 0;
+		
         ushort_t res = static_cast<ushort_t>((buf >> bpos) & bit_mask[count]);
         bpos += count;
-        while (bpos > 8)
+        while (bpos > 7)
         {
             buf >>= 8; bpos -= 8;
-            if (!eof()) buf += (file[dpos++] << 24);
+            if (dpos < file.size()) 
+			{
+				uint_t bb = (file[dpos++] << 24);
+				buf += bb;
+			}
         }
 
         return res;
     }
+	
+	ushort_t get_huffman(size_t count)
+	{
+		return reverce_bits(get(count), count);
+	}
+	
 
-    bool eof() { return dpos >= file.size(); }
+    bool eof() { return dpos >= file.size() && bpos >= sizeof(uint_t); }
 
 private:
-    std::vector<byte_t>& file;
+    std::vector<byte_t> file;
     uint_t buf;
     size_t bpos;
     size_t dpos;
@@ -543,7 +567,7 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         
         const int BFINAL = 1;
 
-        enum {BTYPE_NO, BTYPE_FIXED, BTYPE_DYNAMIC, BTYPE_ERROR  };
+        enum {BTYPE_NO, BTYPE_FIXED, BTYPE_DYNAMIC, BTYPE_ERROR };
         
         // CM = 8 denotes the "deflate" compression method
         // fdict = 0, The additional flags shall not specify a preset dictionary 
@@ -570,21 +594,25 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 									0b01001001, 0b00101100, 0b01001001, 0b01010101, 
 									0b00000000, 0b00010001, 0b00000000};
         
-        bool begin_block = true;
         byte_t btype = BTYPE_ERROR;
         std::vector<byte_t> result;
 
         BitStream bs(data);
+		
+		//read block header from input stream.
         bool last_block = bs.get(1) && BFINAL;
-
         btype = bs.get(2);
 
-        if (btype == BTYPE_NO)  
+
+        if (btype == BTYPE_NO)   // stored with no compression
         {
             std::cout << "BTYPE_NO" << std::endl;
+			// skip any remaining bits in current partially processed byte
+			// read LEN and NLEN (see next section)
+			// copy LEN bytes of data to output
 /*
 
-    Any bits of input up to the next byte boundary are ignored.
+		Any bits of input up to the next byte boundary are ignored.
          The rest of the block consists of the following information:
 
               0   1   2   3   4...
@@ -601,37 +629,44 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         {
             std::cout << "BTYPE_FIXED" << std::endl;
 
-/*
-    Lit Value    Bits        Codes
-   ---------    ----        -----
-     0 - 143     8          00110000 through
-                            10111111
-   144 - 255     9          110010000 through
-                            111111111
-   256 - 279     7          0000000 through
-                            0010111
-   280 - 287     8          11000000 through
-                            11000111
-*/
-         
-			ushort_t code = bs.get(7);
-			if (code >= 0b0000000 && code <= 0b0010111) 
-			{	
-				std::cout << "lenght-dist" << std::endl;
-				exit(0);
-			}
-			
-			code = (code << 1) + bs.get(1);
-			if (code >= 0x30 && code <= 0xBF)
+			while (!bs.eof())
 			{
-				result.push_back(code - 0x30);
-			} else if (code >= 0xC0 && code <= 0xC7)
-			{
-				std::cout << "lenght-dist" << std::endl;
+				ushort_t code = bs.get_huffman(7);          
+				if (code >= 0xb0000000 && code <= 0b0010111)    // 7 bit code, Lit Value 256 - 279
+				{	
+					std::cout << "lenght-dist" << std::endl;
+					continue;
+				} 
+				
+				code = (code << 1) + bs.get_huffman(1);         // add 1 more bit
+				
+				if (code >= 0b11000000 && code <= 0b11000111)   // 8 bit code, Lit Value 280 - 287
+				{
+					std::cout << "lenght-dist" << std::endl;
+					continue;
+				} else				
+				if (code >= 0b00110000 && code <= 0b10111111)   // 8 bit code, Lit Value 0 - 143 
+				{
+					result.push_back(code - 0x30);
+					std::cout << result.back() << std::endl;
+					continue;
+				}
+				
+				code = (code << 1) + bs.get_huffman(1);         // add 1 more bit
+				
+				if (code >= 0b110010000 && code <= 0b111111111) // 9 bit code, Lit Value 144 - 255 
+				{
+					result.push_back(code - 0x100);
+					std::cout << result.back() << std::endl;
+					continue;
+				} else 
+				{
+					std::cout << " DATA READ ERRROR!!!!!" << std::endl;
+					exit(0);
+				}
 			}
+			std::cout << "complete" << std::endl;
 
-			std::cout << result[0] << std::endl;
-            exit(0);
         } else
         if (btype == BTYPE_DYNAMIC)
         {
