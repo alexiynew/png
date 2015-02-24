@@ -257,7 +257,7 @@ struct BitStream {
 	}
 	
 
-    bool eof() { return dpos >= file.size() && bpos >= sizeof(uint_t); }
+    bool eof() { return dpos >= file.size() && bpos >= sizeof(uint_t) * 8; }
 
 private:
     std::vector<byte_t> file;
@@ -554,11 +554,6 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 
         file.skip(length - 2 + CHUNK_CRC_SIZE);
         
-        /*
-		 *      0b01110011, 0b01001001, 0b01001101, 0b11001011, 
-				0b01001001, 0b00101100, 0b01001001, 0b01010101, 
-				0b00000000, 0b00010001, 0b00000000, 
-		 * */
         
         std::vector<byte_t> data = {0b01110011, 0b01001001, 0b01001101, 0b11001011, 
 									0b01001001, 0b00101100, 0b01001001, 0b01010101, 
@@ -620,7 +615,14 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 			{
 				ushort_t code = bs.get_huffman(7);          
 				if (code >= 0b0000000 && code <= 0b0010111)    // 7 bit code, Lit Value 256 - 279
-				{						        
+				{						     
+					if (code == 0)
+					{ 
+						for (auto& x : result) std::cout << x;
+						std::cout << std::endl;
+						return last_block; // exit from decoding
+					}
+   
 					byte_t length_extra_bits_count = length_extra_bits[code];
 					size_t length = length_values[code] + bs.get(length_extra_bits_count);
 					
@@ -628,8 +630,19 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 					byte_t dist_extra_bits_count = dist_extra_bits[dist_code];
 					size_t dist = dist_values[dist_code] + bs.get(dist_extra_bits_count);
 
+					if (dist < result.size())
+					{
+						for (int i = 0, pos = result.size() - dist, j = 0; i < length; ++i, j = 0)
+						{
+							while (j < dist && i < length) result.push_back(result[pos + j++]), ++i;
+						}
+					}
+
 					std::cout << "lenght: " << length << std::endl;   
 					std::cout << "dist: " << dist << std::endl;
+					
+					
+					
 					continue;   				                       
 
 				} 
@@ -638,10 +651,23 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 				
 				if (code >= 0b11000000 && code <= 0b11000111)   // 8 bit code, Lit Value 280 - 287
 				{
-					byte_t extra_bits_count = length_extra_bits[code];
-					size_t length = length_values[code] + bs.get(extra_bits_count);
+					byte_t length_extra_bits_count = length_extra_bits[code];
+					size_t length = length_values[code] + bs.get(length_extra_bits_count);
 					
+					byte_t dist_code = bs.get(DIST_CODE_SIZE);
+					byte_t dist_extra_bits_count = dist_extra_bits[dist_code];
+					size_t dist = dist_values[dist_code] + bs.get(dist_extra_bits_count);
+
+					if (dist < result.size())
+					{
+						for (int i = 0, pos = result.size() - dist, j = 0; i < length; ++i, j = 0)
+						{
+							while (j < dist) result.push_back(result[pos + j++]);
+						}
+					}
+
 					std::cout << "lenght: " << length << std::endl;   
+					std::cout << "dist: " << dist << std::endl;  
 					continue;
 				} else				
 				if (code >= 0b00110000 && code <= 0b10111111)   // 8 bit code, Lit Value 0 - 143 
@@ -674,9 +700,6 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         {
             std::cout << "Error" << std::endl;
         }
-        
-        
-        return true;
     }
 
     return false;
