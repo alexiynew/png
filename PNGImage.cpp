@@ -598,21 +598,21 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         if (btype == BTYPE_FIXED)
         {
             std::cout << "BTYPE_FIXED" << std::endl;
-			static const length_extra_bits byte_t [] = {
+			static const byte_t length_extra_bits[] = {
 				0,  0,0,0,0, 0,0,0,0,  1,1,1,1,     2,2,2,2,     3,3,3,3,     4,4,4,4,      5,5,5,5,         0
 			};
 			//  256 257 --------- 264  265 --- 268  269 --- 272  273 --- 276  277 ---- 280  281 ------- 284  285
 			//  ^- bound valuse, not useed;
-			static const length_values ushort_t [] = {
+			static const ushort_t length_values[] = {
 				0,  3,4,5,6, 7,8,9,10, 11,13,15,17, 19,23,27,31, 35,43,51,59, 67,83,99,115, 131,163,195,227, 258
 			};
 			
-			static const DIST_CODE_SIZE = 5;
-			static const dist_extra_bits byte_t [] = {
+			static const size_t DIST_CODE_SIZE = 5;
+			static const byte_t dist_extra_bits[] = {
 				0,0, 0,0, 1,1, 2,2,  3,3,   4,4,   5,5,   6,6,     7,7,     8,8,     9,9,       10,10,     11,11,     12,12,      13,13
 			};
 			//  0 1  2 3  4 5  6 7   8  9   10 11  12 13  14  15   16  17   18  19   20   21    22   23    24   25    26   27     28    29
-			static const dist_values ushort_t [] = {
+			static const ushort_t dist_values[] = {
 				1,2, 3,4, 5,7, 9,13, 17,25, 33,49, 65,97, 129,193, 257,385, 513,769, 1025,1537, 2049,3073, 4097,6145, 8193,12289, 16385,24577   
 			};
 			
