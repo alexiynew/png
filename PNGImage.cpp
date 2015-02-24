@@ -231,8 +231,9 @@ struct BitStream {
     }
 
     ushort_t get (size_t count)
-    {   
-        assert(count > 0 && count <= sizeof(ushort_t) * 8);
+    {   		
+        assert(count >= 0 && count <= sizeof(ushort_t) * 8);
+		if (count == 0) return 0;
 		if (eof()) return 0;
 		
         ushort_t res = static_cast<ushort_t>((buf >> bpos) & bit_mask[count]);
@@ -520,39 +521,8 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
             while not last block
          */
 
-        /*
-              Extra               Extra               Extra
-            Code Bits Length(s) Code Bits Lengths   Code Bits Length(s)
-            ---- ---- ------     ---- ---- -------   ---- ---- -------
-             257   0     3       267   1   15,16     277   4   67-82
-             258   0     4       268   1   17,18     278   4   83-98
-             259   0     5       269   2   19-22     279   4   99-114
-             260   0     6       270   2   23-26     280   4  115-130
-             261   0     7       271   2   27-30     281   5  131-162
-             262   0     8       272   2   31-34     282   5  163-194
-             263   0     9       273   3   35-42     283   5  195-226
-             264   0    10       274   3   43-50     284   5  227-257
-             265   1  11,12      275   3   51-58     285   0    258
-             266   1  13,14      276   3   59-66
 
-        */
-    /*
 
-    
-                  Extra           Extra               Extra
-             Code Bits Dist  Code Bits   Dist     Code Bits Distance
-             ---- ---- ----  ---- ----  ------    ---- ---- --------
-               0   0    1     10   4     33-48    20    9   1025-1536
-               1   0    2     11   4     49-64    21    9   1537-2048
-               2   0    3     12   5     65-96    22   10   2049-3072
-               3   0    4     13   5     97-128   23   10   3073-4096
-               4   1   5,6    14   6    129-192   24   11   4097-6144
-               5   1   7,8    15   6    193-256   25   11   6145-8192
-               6   2   9-12   16   7    257-384   26   12  8193-12288
-               7   2  13-16   17   7    385-512   27   12 12289-16384
-               8   3  17-24   18   8    513-768   28   13 16385-24576
-               9   3  25-32   19   8   769-1024   29   13 24577-32768
-    */
         
         
         byte_t cmf, flg;
@@ -628,21 +598,50 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         if (btype == BTYPE_FIXED)
         {
             std::cout << "BTYPE_FIXED" << std::endl;
-
+			static const length_extra_bits byte_t [] = {
+				0,  0,0,0,0, 0,0,0,0,  1,1,1,1,     2,2,2,2,     3,3,3,3,     4,4,4,4,      5,5,5,5,         0
+			};
+			//  256 257 --------- 264  265 --- 268  269 --- 272  273 --- 276  277 ---- 280  281 ------- 284  285
+			//  ^- bound valuse, not useed;
+			static const length_values ushort_t [] = {
+				0,  3,4,5,6, 7,8,9,10, 11,13,15,17, 19,23,27,31, 35,43,51,59, 67,83,99,115, 131,163,195,227, 258
+			};
+			
+			static const DIST_CODE_SIZE = 5;
+			static const dist_extra_bits byte_t [] = {
+				0,0, 0,0, 1,1, 2,2,  3,3,   4,4,   5,5,   6,6,     7,7,     8,8,     9,9,       10,10,     11,11,     12,12,      13,13
+			};
+			//  0 1  2 3  4 5  6 7   8  9   10 11  12 13  14  15   16  17   18  19   20   21    22   23    24   25    26   27     28    29
+			static const dist_values ushort_t [] = {
+				1,2, 3,4, 5,7, 9,13, 17,25, 33,49, 65,97, 129,193, 257,385, 513,769, 1025,1537, 2049,3073, 4097,6145, 8193,12289, 16385,24577   
+			};
+			
 			while (!bs.eof())
 			{
 				ushort_t code = bs.get_huffman(7);          
-				if (code >= 0xb0000000 && code <= 0b0010111)    // 7 bit code, Lit Value 256 - 279
-				{	
-					std::cout << "lenght-dist" << std::endl;
-					continue;
+				if (code >= 0b0000000 && code <= 0b0010111)    // 7 bit code, Lit Value 256 - 279
+				{						        
+					byte_t length_extra_bits_count = length_extra_bits[code];
+					size_t length = length_values[code] + bs.get(length_extra_bits_count);
+					
+					byte_t dist_code = bs.get(DIST_CODE_SIZE);
+					byte_t dist_extra_bits_count = dist_extra_bits[dist_code];
+					size_t dist = dist_values[dist_code] + bs.get(dist_extra_bits_count);
+
+					std::cout << "lenght: " << length << std::endl;   
+					std::cout << "dist: " << dist << std::endl;
+					continue;   				                       
+
 				} 
 				
 				code = (code << 1) + bs.get_huffman(1);         // add 1 more bit
 				
 				if (code >= 0b11000000 && code <= 0b11000111)   // 8 bit code, Lit Value 280 - 287
 				{
-					std::cout << "lenght-dist" << std::endl;
+					byte_t extra_bits_count = length_extra_bits[code];
+					size_t length = length_values[code] + bs.get(extra_bits_count);
+					
+					std::cout << "lenght: " << length << std::endl;   
 					continue;
 				} else				
 				if (code >= 0b00110000 && code <= 0b10111111)   // 8 bit code, Lit Value 0 - 143 
