@@ -627,16 +627,23 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 			
 			while (!bs.eof())
 			{
-				ushort_t code = bs.get_huffman(7);          
-				if (code >= 0b0000000 && code <= 0b0010111)    // 7 bit code, Lit Value 256 - 279
-				{						     
-					if (code == 0)
-					{ 
-						for (auto& x : result) std::cout << x;
-						std::cout << std::endl;
-						return last_block; // exit from decoding
-					}
-   
+				ushort_t code = bs.get_huffman(7);   
+				if (code == 0)
+				{ 
+					for (auto& x : result) std::cout << x;
+					std::cout << std::endl;
+					return last_block; // exit from decoding
+				}
+				
+				bool code_is_length = (code >= 0b0000000 && code <= 0b0010111);  // 7 bit code, Lit Value 256 - 279
+				if (!code_is_length) 
+				{
+					code = (code << 1) + bs.get_huffman(1);         // add 1 more bit
+					code_is_length = (code >= 0b11000000 && code <= 0b11000111);  // 8 bit code, Lit Value 280 - 287
+				}
+
+				if (code_is_length)  
+				{
 					byte_t length_extra_bits_count = length_extra_bits[code];
 					size_t length = length_values[code] + bs.get(length_extra_bits_count);
 					
@@ -646,7 +653,7 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 
 					if (dist < result.size())
 					{
-						for (int i = 0, pos = result.size() - dist, j = 0; i < length; ++i, j = 0)
+						for (size_t i = 0, pos = result.size() - dist, j = 0; i < length; ++i, j = 0)
 						{
 							while (j < dist && i < length) result.push_back(result[pos + j++]), ++i;
 						}
@@ -654,62 +661,87 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 
 					std::cout << "lenght: " << length << std::endl;   
 					std::cout << "dist: " << dist << std::endl;
-					
-					
-					
-					continue;   				                       
 
-				} 
-				
-				code = (code << 1) + bs.get_huffman(1);         // add 1 more bit
-				
-				if (code >= 0b11000000 && code <= 0b11000111)   // 8 bit code, Lit Value 280 - 287
-				{
-					byte_t length_extra_bits_count = length_extra_bits[code];
-					size_t length = length_values[code] + bs.get(length_extra_bits_count);
-					
-					byte_t dist_code = bs.get(DIST_CODE_SIZE);
-					byte_t dist_extra_bits_count = dist_extra_bits[dist_code];
-					size_t dist = dist_values[dist_code] + bs.get(dist_extra_bits_count);
-
-					if (dist < result.size())
-					{
-						for (int i = 0, pos = result.size() - dist, j = 0; i < length; ++i, j = 0)
-						{
-							while (j < dist) result.push_back(result[pos + j++]);
-						}
-					}
-
-					std::cout << "lenght: " << length << std::endl;   
-					std::cout << "dist: " << dist << std::endl;  
-					continue;
-				} else				
-				if (code >= 0b00110000 && code <= 0b10111111)   // 8 bit code, Lit Value 0 - 143 
+				} else 
+				if (code >= 0b00110000 && code <= 0b10111111)       // 8 bit code, Lit Value 0 - 143 
 				{
 					result.push_back(code - 0x30);
 					std::cout << result.back() << std::endl;
-					continue;
+				} else
+				{
+					code = (code << 1) + bs.get_huffman(1);         // add 1 more bit
+				
+					if (code >= 0b110010000 && code <= 0b111111111) // 9 bit code, Lit Value 144 - 255 
+					{
+						result.push_back(code - 0x100);
+						std::cout << result.back() << std::endl;
+						continue;
+					} else 
+					{
+						std::cout << " DATA READ ERRROR!!!!!" << std::endl;
+						exit(0);
+					}
 				}
 				
-				code = (code << 1) + bs.get_huffman(1);         // add 1 more bit
-				
-				if (code >= 0b110010000 && code <= 0b111111111) // 9 bit code, Lit Value 144 - 255 
-				{
-					result.push_back(code - 0x100);
-					std::cout << result.back() << std::endl;
-					continue;
-				} else 
-				{
-					std::cout << " DATA READ ERRROR!!!!!" << std::endl;
-					exit(0);
-				}
 			}
 			std::cout << "complete" << std::endl;
 
         } else
         if (btype == BTYPE_DYNAMIC)
         {
-            std::cout << "BTYPE_DYNAMIC" << std::endl;
+			
+			/*
+			 * code lengths
+			        0 - 15: Represent code lengths of 0 - 15
+                   16: Copy the previous code length 3 - 6 times.
+                       The next 2 bits indicate repeat length
+                             (0 = 3, ... , 3 = 6)
+                          Example:  Codes 8, 16 (+2 bits 11),
+                                    16 (+2 bits 10) will expand to
+                                    12 code lengths of 8 (1 + 6 + 5)
+                   17: Repeat a code length of 0 for 3 - 10 times.
+                       (3 bits of length)
+                   18: Repeat a code length of 0 for 11 - 138 times
+                       (7 bits of length)
+
+ * 
+ *             5 Bits: HLIT, # of Literal/Length codes - 257 (257 - 286)
+               5 Bits: HDIST, # of Distance codes - 1        (1 - 32)
+               4 Bits: HCLEN, # of Code Length codes - 4     (4 - 19)
+			    * 
+				*  (HCLEN + 4) x 3 bits: code lengths for the code length
+                  alphabet given just above, in the order: 16, 17, 18,
+                  0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+
+                  These code lengths are interpreted as 3-bit integers
+                  (0-7); as above, a code length of 0 means the
+                  corresponding symbol (literal/length or distance code
+                  length) is not used.
+
+               HLIT + 257 code lengths for the literal/length alphabet,
+                  encoded using the code length Huffman code
+
+               HDIST + 1 code lengths for the distance alphabet,
+                  encoded using the code length Huffman code
+
+               The actual compressed data of the block,
+                  encoded using the literal/length and distance Huffman
+                  codes
+
+               The literal/length symbol 256 (end of data),
+                  encoded using the literal/length Huffman code
+			 * */
+			std::cout << "BTYPE_DYNAMIC" << std::endl;
+			 
+			 
+			size_t HLIT = bs.get(5) + 257;
+			size_t HDIST = bs.get(5) + 1;
+			size_t HCLEN = bs.get(4) + 4;
+			std::cout << "HLIT " << std::dec << HLIT << "\n"
+					  << "HDIST " << std::dec <<  HDIST << "\n"
+					  << "HCLEN " << std::dec <<  HCLEN << std::endl;
+			
+            return true;
         } else 
         {
             std::cout << "Error" << std::endl;
