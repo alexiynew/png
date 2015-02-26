@@ -1,1 +1,1 @@
-# png
+# PNGImage

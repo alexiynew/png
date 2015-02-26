@@ -2,7 +2,6 @@
 #include <vector>
 #include <algorithm>
 #include <fstream>
-#include <cmath>
 #include <cassert>
 
 #include "PNGImage.h"
@@ -332,7 +331,7 @@ bool Header::from_file(ImageFile& file)
     // check color type and bit depth
     std::vector<byte_t> allowed_bit_depths;
 
-    switch (static_cast<ColourType>(colour_type))
+    switch (colour_type)
     {
         case ColourType::Greyscale : 
             allowed_bit_depths = {1,2,4,8,16};  
@@ -345,9 +344,6 @@ bool Header::from_file(ImageFile& file)
         case ColourType::ATrueColour : 
             allowed_bit_depths = {8,16};
             break;
-        default : 
-            std::cout << "Wrong image color type" << std::endl;
-            return false; 
     };
 
     if (std::find(allowed_bit_depths.begin(), allowed_bit_depths.end(), bit_depth) == allowed_bit_depths.end())
@@ -527,13 +523,13 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         
         byte_t cmf, flg;
         file >> cmf >> flg;
-        byte_t cm     = cmf & 0x0F;
-        byte_t cinfo  = (cmf >> 4) & 0x0F;
-        byte_t fcheck = flg & 0x1F;
-        byte_t fdict  = (flg >> 5) & 1;
-        byte_t flevel = (flg >> 6) & 0x03;
+        byte_t cm     = (byte_t) (cmf & 0x0F);
+        byte_t cinfo  = (byte_t) ((cmf >> 4) & 0x0F);
+        byte_t fcheck = (byte_t) (flg & 0x1F);
+        byte_t fdict  = (byte_t) ((flg >> 5) & 1);
+        byte_t flevel = (byte_t) ((flg >> 6) & 0x03);
 
-        size_t window_size = pow(2, (cinfo + 8));
+        size_t window_size = (size_t) pow(2, (cinfo + 8));
         
         const int BFINAL = 1;
 
@@ -740,7 +736,35 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 			std::cout << "HLIT " << std::dec << HLIT << "\n"
 					  << "HDIST " << std::dec <<  HDIST << "\n"
 					  << "HCLEN " << std::dec <<  HCLEN << std::endl;
-			
+            static const byte_t code_length_indexes [] = {
+                16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+            };
+
+            std::vector<byte_t> code_lengths_for_code_lengths(19, 0);
+            std::vector<byte_t> code_lengths(19, 0);
+            size_t max_code_length = 0;
+            for (size_t i = 0; i < HCLEN; ++i)
+            {
+                byte_t cl = (byte_t) bs.get(3);
+                if (cl > max_code_length) max_code_length = cl;
+                code_lengths_for_code_lengths[code_length_indexes[i]] = cl;
+            }
+            // generate code lengths
+            std::vector<size_t> bl_count(max_code_length);
+            for (const auto& x : code_lengths_for_code_lengths)
+                bl_count[x]++;
+
+            //Find the numerical value of the smallest code for each
+            //code length:
+
+            code = 0;
+            bl_count[0] = 0;
+            for (bits = 1; bits <= MAX_BITS; bits++) {
+                code = (code + bl_count[bits-1]) << 1;
+                next_code[bits] = code;
+            }
+
+
             return true;
         } else 
         {
