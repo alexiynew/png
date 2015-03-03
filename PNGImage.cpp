@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#include <map>
 #include <fstream>
 #include <cassert>
 
@@ -101,6 +102,23 @@ enum class ColourType : byte_t
     AGreyscale  = 4,
     ATrueColour = 6
 };
+
+struct Code {
+    size_t code;
+    size_t length;
+    Code (size_t c, size_t l) : code(c), length(l)
+    {}
+};
+
+bool operator< (const Code& lhs, const Code& rhs)
+{
+    return lhs.length < rhs.length || lhs.code < rhs.code;
+}
+
+bool operator== (const Code& lhs, const Code& rhs)
+{
+    return lhs.length == rhs.length && lhs.code == rhs.code;
+}
 
 // --------------------------------------------------------
 // File read / write support
@@ -739,30 +757,48 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
             static const byte_t code_length_indexes [] = {
                 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
             };
+            static const size_t MAX_CODE = 19;
 
-            std::vector<byte_t> code_lengths_for_code_lengths(19, 0);
-            std::vector<byte_t> code_lengths(19, 0);
-            size_t max_code_length = 0;
-            for (size_t i = 0; i < HCLEN; ++i)
-            {
+            std::vector<byte_t> code_lengths_for_code_lengths(MAX_CODE, 0);
+
+            // Read HCLEN * 3 bits for code lengths for code length alphabet
+            size_t max_bits = 0;
+            for (size_t i = 0; i < HCLEN; ++i) {
                 byte_t cl = (byte_t) bs.get(3);
-                if (cl > max_code_length) max_code_length = cl;
+                if (cl > max_bits) max_bits = cl;
                 code_lengths_for_code_lengths[code_length_indexes[i]] = cl;
             }
-            // generate code lengths
-            std::vector<size_t> bl_count(max_code_length);
-            for (const auto& x : code_lengths_for_code_lengths)
-                bl_count[x]++;
 
-            //Find the numerical value of the smallest code for each
-            //code length:
-
-            code = 0;
+            // Count the number of codes for each code length
+            std::vector<size_t> bl_count(max_bits + 1, 0);
+            for (const auto& l : code_lengths_for_code_lengths)
+                if (l) bl_count[l]++;
             bl_count[0] = 0;
-            for (bits = 1; bits <= MAX_BITS; bits++) {
-                code = (code + bl_count[bits-1]) << 1;
+
+            // Find the numerical value of the smallest code for each code length
+            std::vector<size_t> next_code(max_bits + 1);
+            for (size_t bits = 1, code = 0; bits <= max_bits; ++bits) {
+                code = (code + bl_count[bits - 1]) << 1;
                 next_code[bits] = code;
             }
+
+            // Assign numerical values to all codes
+            std::map<Code, size_t> code_lengths_alphabet;
+            for (size_t n = 0;  n < MAX_CODE; ++n) {
+                byte_t len = code_lengths_for_code_lengths[n];
+                if (len != 0) {
+                    Code c(next_code[len], len);
+
+                    if (code_lengths_alphabet.count(c)){
+                        auto f = code_lengths_alphabet.find(c);
+                        code_lengths_alphabet[Code(next_code[len], len)] = n;
+                    }
+                    code_lengths_alphabet[Code(next_code[len], len)] = n;
+                    next_code[len]++;
+                }
+            }
+
+
 
 
             return true;
