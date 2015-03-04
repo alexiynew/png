@@ -703,54 +703,11 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         } else
         if (btype == BTYPE_DYNAMIC)
         {
-			
-			/*
-			 * code lengths
-			        0 - 15: Represent code lengths of 0 - 15
-                   16: Copy the previous code length 3 - 6 times.
-                       The next 2 bits indicate repeat length
-                             (0 = 3, ... , 3 = 6)
-                          Example:  Codes 8, 16 (+2 bits 11),
-                                    16 (+2 bits 10) will expand to
-                                    12 code lengths of 8 (1 + 6 + 5)
-                   17: Repeat a code length of 0 for 3 - 10 times.
-                       (3 bits of length)
-                   18: Repeat a code length of 0 for 11 - 138 times
-                       (7 bits of length)
-
- * 
- *             5 Bits: HLIT, # of Literal/Length codes - 257 (257 - 286)
-               5 Bits: HDIST, # of Distance codes - 1        (1 - 32)
-               4 Bits: HCLEN, # of Code Length codes - 4     (4 - 19)
-			    * 
-				*  (HCLEN + 4) x 3 bits: code lengths for the code length
-                  alphabet given just above, in the order: 16, 17, 18,
-                  0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
-
-                  These code lengths are interpreted as 3-bit integers
-                  (0-7); as above, a code length of 0 means the
-                  corresponding symbol (literal/length or distance code
-                  length) is not used.
-
-               HLIT + 257 code lengths for the literal/length alphabet,
-                  encoded using the code length Huffman code
-
-               HDIST + 1 code lengths for the distance alphabet,
-                  encoded using the code length Huffman code
-
-               The actual compressed data of the block,
-                  encoded using the literal/length and distance Huffman
-                  codes
-
-               The literal/length symbol 256 (end of data),
-                  encoded using the literal/length Huffman code
-			 * */
 			std::cout << "BTYPE_DYNAMIC" << std::endl;
-			 
-			 
-			size_t HLIT = bs.get(5) + 257;
-			size_t HDIST = bs.get(5) + 1;
-			size_t HCLEN = bs.get(4) + 4;
+
+			size_t HLIT = bs.get(5) + 257; //  HLIT + 257 code lengths for the literal/length alphabet
+			size_t HDIST = bs.get(5) + 1;  //  HDIST + 1 code lengths for the distance alphabet
+			size_t HCLEN = bs.get(4) + 4;  //  (HCLEN + 4) x 3 bits: code lengths for the code length alphabet
 			std::cout << "HLIT " << std::dec << HLIT << "\n"
 					  << "HDIST " << std::dec <<  HDIST << "\n"
 					  << "HCLEN " << std::dec <<  HCLEN << std::endl;
@@ -798,8 +755,65 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
                 }
             }
 
+            // Read code lengths for the literal/length alphabet
+            std::vector<size_t>lit_code_lengths(HLIT);
+            for (size_t i = 0; i < HLIT; ++i) {
+                size_t code = 0, len = 0;
+                while (!code_lengths_alphabet.count(Code(code, len))) {
+                    code = (code << 1) + bs.get_huffman(1);
+                    len++;
+                }
+                size_t lit_code = code_lengths_alphabet[Code(code, len)];
 
+                if (lit_code == 16) {
+                    // Copy the previous code length 3 - 6 times (2 bits)
+                    if (i == 0) {
+                        std::cout << "Wrong code_length size" << std::endl;
+                        return false;
+                    }
+                    for (size_t times = bs.get(2) + 3; times > 0; times--, ++i)
+                        lit_code_lengths[i] = lit_code_lengths[i - 1];
+                } else if (lit_code == 17) {
+                    // Repeat a code length of 0 for 3 - 10 times (3 bits)
+                    i += bs.get(3) + 3 - 1;
+                } else if (lit_code == 18) {
+                    // Repeat a code length of 0 for 11 - 138 times (7 bits)
+                    i += bs.get(7) + 11 - 1;
+                } else {
+                    // 0 - 15: Represent code lengths of 0 - 15
+                    lit_code_lengths[i] = lit_code;
+                }
+            }
 
+            // Read distance code lengths
+            std::vector<size_t>dist_code_lengths(HDIST);
+            for (size_t i = 0; i < HDIST; ++i) {
+                size_t code = 0, len = 0;
+                while (!code_lengths_alphabet.count(Code(code, len))) {
+                    code = (code << 1) + bs.get_huffman(1);
+                    len++;
+                }
+                size_t dist_code = code_lengths_alphabet[Code(code, len)];
+
+                if (dist_code == 16) {
+                    // Copy the previous code length 3 - 6 times (2 bits)
+                    if (i == 0) {
+                        std::cout << "Wrong code_length size" << std::endl;
+                        return false;
+                    }
+                    for (size_t times = bs.get(2) + 3; times > 0; times--, ++i)
+                        dist_code_lengths[i] = dist_code_lengths[i - 1];
+                } else if (dist_code == 17) {
+                    // Repeat a code length of 0 for 3 - 10 times (3 bits)
+                    i += bs.get(3) + 3 - 1;
+                } else if (dist_code == 18) {
+                    // Repeat a code length of 0 for 11 - 138 times (7 bits)
+                    i += bs.get(7) + 11 - 1;
+                } else {
+                    // 0 - 15: Represent code lengths of 0 - 15
+                    dist_code_lengths[i] = dist_code;
+                }
+            }
 
             return true;
         } else 
