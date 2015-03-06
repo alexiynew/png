@@ -19,6 +19,8 @@ const static int CHUNK_TYPE_SIZE   = 4;
 const static int CHUNK_LENGTH_SIZE = 4;
 const static int CHUNK_CRC_SIZE    = 4;
 
+static const size_t MAX_HCLEN = 19;
+
 const static byte_t PNG_SIGNATURE[] = { 0x89, 0x50, 0x4E, 0x47, 0x0d, 0x0a, 0x1a, 0x0a };
 
 const static uint_t crc_table[] = 
@@ -102,6 +104,25 @@ enum class ColourType : byte_t
     AGreyscale  = 4,
     ATrueColour = 6
 };
+
+static const byte_t length_extra_bits[] = {
+        0,  0,0,0,0, 0,0,0,0,  1,1,1,1,     2,2,2,2,     3,3,3,3,     4,4,4,4,      5,5,5,5,         0
+};
+//  256 257 --------- 264  265 --- 268  269 --- 272  273 --- 276  277 ---- 280  281 ------- 284  285
+//  ^- bound valuse, not useed;
+static const ushort_t length_values[] = {
+        0,  3,4,5,6, 7,8,9,10, 11,13,15,17, 19,23,27,31, 35,43,51,59, 67,83,99,115, 131,163,195,227, 258
+};
+
+static const size_t DIST_CODE_SIZE = 5;
+static const byte_t dist_extra_bits[] = {
+        0,0, 0,0, 1,1, 2,2,  3,3,   4,4,   5,5,   6,6,     7,7,     8,8,     9,9,       10,10,     11,11,     12,12,      13,13
+};
+//  0 1  2 3  4 5  6 7   8  9   10 11  12 13  14  15   16  17   18  19   20   21    22   23    24   25    26   27     28    29
+static const ushort_t dist_values[] = {
+        1,2, 3,4, 5,7, 9,13, 17,25, 33,49, 65,97, 129,193, 257,385, 513,769, 1025,1537, 2049,3073, 4097,6145, 8193,12289, 16385,24577
+};
+
 
 struct Code {
     size_t code;
@@ -283,6 +304,68 @@ private:
     size_t dpos;
 };
 
+
+std::map<Code, size_t> generate_huffman_codes(const std::vector<size_t> &code_lengths)
+{
+    // Count the number of codes for each code length
+    std::vector<size_t> bl_count(1);
+    for (const auto& l : code_lengths) {
+        if (l >= bl_count.size()) bl_count.resize(l+1, 0);
+        if (l) bl_count[l]++;
+    }
+    bl_count[0] = 0;
+
+    // Find the numerical value of the smallest code for each code length
+    std::vector<size_t> code_value (bl_count.size());
+    for (size_t bits = 1, code = 0; bits < bl_count.size(); ++bits) {
+        code = (code + bl_count[bits - 1]) << 1;
+        code_value[bits] = code;
+    }
+
+    // Assign numerical values to all codes
+    std::map<Code, size_t> code_alphabet;
+    for (size_t n = 0, len = 0;  n < code_lengths.size(); ++n) {
+        if ((len = code_lengths[n]) != 0) {
+            code_alphabet[Code(code_value[len], len)] = n;
+            ++code_value[len];
+        }
+    }
+
+    return code_alphabet;
+}
+
+std::vector<size_t> read_code_lengths(BitStream& bs, size_t count, std::map<Code, size_t> code_alphabet)
+{
+    std::vector<size_t>code_lengths(count);
+    for (size_t i = 0; i < count; ++i) {
+        Code hcode(0,0);
+        while (!code_alphabet.count(hcode)) {
+            hcode.code = (hcode.code << 1) + bs.get_huffman(1);
+            hcode.length++;
+        }
+        size_t lit_code = code_alphabet[hcode];
+
+        if (lit_code == 16) {
+            // Copy the previous code length 3 - 6 times (2 bits)
+            if (i == 0) {
+                std::cout << "Wrong code_length size" << std::endl;
+                return std::vector<size_t>();
+            }
+            for (size_t times = bs.get(2) + 3; times > 0; times--, ++i)
+                code_lengths[i] = code_lengths[i - 1];
+        } else if (lit_code == 17) {
+            // Repeat a code length of 0 for 3 - 10 times (3 bits)
+            i += bs.get(3) + 3 - 1;
+        } else if (lit_code == 18) {
+            // Repeat a code length of 0 for 11 - 138 times (7 bits)
+            i += bs.get(7) + 11 - 1;
+        } else {
+            // 0 - 15: Represent code lengths of 0 - 15
+            code_lengths[i] = lit_code;
+        }
+    }
+    return code_lengths;
+}
 
 // --------------------------------------------------------
 // Image header
@@ -621,23 +704,7 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         if (btype == BTYPE_FIXED)
         {
             std::cout << "BTYPE_FIXED" << std::endl;
-			static const byte_t length_extra_bits[] = {
-				0,  0,0,0,0, 0,0,0,0,  1,1,1,1,     2,2,2,2,     3,3,3,3,     4,4,4,4,      5,5,5,5,         0
-			};
-			//  256 257 --------- 264  265 --- 268  269 --- 272  273 --- 276  277 ---- 280  281 ------- 284  285
-			//  ^- bound valuse, not useed;
-			static const ushort_t length_values[] = {
-				0,  3,4,5,6, 7,8,9,10, 11,13,15,17, 19,23,27,31, 35,43,51,59, 67,83,99,115, 131,163,195,227, 258
-			};
-			
-			static const size_t DIST_CODE_SIZE = 5;
-			static const byte_t dist_extra_bits[] = {
-				0,0, 0,0, 1,1, 2,2,  3,3,   4,4,   5,5,   6,6,     7,7,     8,8,     9,9,       10,10,     11,11,     12,12,      13,13
-			};
-			//  0 1  2 3  4 5  6 7   8  9   10 11  12 13  14  15   16  17   18  19   20   21    22   23    24   25    26   27     28    29
-			static const ushort_t dist_values[] = {
-				1,2, 3,4, 5,7, 9,13, 17,25, 33,49, 65,97, 129,193, 257,385, 513,769, 1025,1537, 2049,3073, 4097,6145, 8193,12289, 16385,24577   
-			};
+
 			
 			while (!bs.eof())
 			{
@@ -714,105 +781,52 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
             static const byte_t code_length_indexes [] = {
                 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
             };
-            static const size_t MAX_CODE = 19;
-
-            std::vector<byte_t> code_lengths_for_code_lengths(MAX_CODE, 0);
 
             // Read HCLEN * 3 bits for code lengths for code length alphabet
-            size_t max_bits = 0;
+            std::vector<size_t> code_lengths_for_code_lengths(MAX_HCLEN);
             for (size_t i = 0; i < HCLEN; ++i) {
-                byte_t cl = (byte_t) bs.get(3);
-                if (cl > max_bits) max_bits = cl;
-                code_lengths_for_code_lengths[code_length_indexes[i]] = cl;
+                code_lengths_for_code_lengths[code_length_indexes[i]] = bs.get(3);
             }
+            auto code_lengths_alphabet = generate_huffman_codes(code_lengths_for_code_lengths);
 
-            // Count the number of codes for each code length
-            std::vector<size_t> bl_count(max_bits + 1, 0);
-            for (const auto& l : code_lengths_for_code_lengths)
-                if (l) bl_count[l]++;
-            bl_count[0] = 0;
+            auto lit_alphabet = generate_huffman_codes(read_code_lengths(bs, HLIT, code_lengths_alphabet));
+            auto dist_alphabet = generate_huffman_codes(read_code_lengths(bs, HDIST, code_lengths_alphabet));
 
-            // Find the numerical value of the smallest code for each code length
-            std::vector<size_t> next_code(max_bits + 1);
-            for (size_t bits = 1, code = 0; bits <= max_bits; ++bits) {
-                code = (code + bl_count[bits - 1]) << 1;
-                next_code[bits] = code;
-            }
-
-            // Assign numerical values to all codes
-            std::map<Code, size_t> code_lengths_alphabet;
-            for (size_t n = 0;  n < MAX_CODE; ++n) {
-                byte_t len = code_lengths_for_code_lengths[n];
-                if (len != 0) {
-                    Code c(next_code[len], len);
-
-                    if (code_lengths_alphabet.count(c)){
-                        auto f = code_lengths_alphabet.find(c);
-                        code_lengths_alphabet[Code(next_code[len], len)] = n;
-                    }
-                    code_lengths_alphabet[Code(next_code[len], len)] = n;
-                    next_code[len]++;
+            std::vector<byte_t> text;
+            while (true) {
+                Code hcode(0,0);
+                while (!lit_alphabet.count(hcode)) {
+                    hcode.code = (hcode.code << 1) + bs.get_huffman(1);
+                    hcode.length++;
                 }
-            }
+                size_t lit_value = lit_alphabet[hcode];
+                if (lit_value == 256) break;
 
-            // Read code lengths for the literal/length alphabet
-            std::vector<size_t>lit_code_lengths(HLIT);
-            for (size_t i = 0; i < HLIT; ++i) {
-                size_t code = 0, len = 0;
-                while (!code_lengths_alphabet.count(Code(code, len))) {
-                    code = (code << 1) + bs.get_huffman(1);
-                    len++;
-                }
-                size_t lit_code = code_lengths_alphabet[Code(code, len)];
+                if (lit_value > 256 && lit_value <= 287 ) // is lentgh / dist code
+                {
+                    byte_t length_extra_bits_count = length_extra_bits[lit_value - 256];
+                    size_t length = length_values[lit_value - 256] + bs.get(length_extra_bits_count);
 
-                if (lit_code == 16) {
-                    // Copy the previous code length 3 - 6 times (2 bits)
-                    if (i == 0) {
-                        std::cout << "Wrong code_length size" << std::endl;
-                        return false;
+                    Code hcode(0,0);
+                    while (!dist_alphabet.count(hcode)) {
+                        hcode.code = (hcode.code << 1) + bs.get_huffman(1);
+                        hcode.length++;
                     }
-                    for (size_t times = bs.get(2) + 3; times > 0; times--, ++i)
-                        lit_code_lengths[i] = lit_code_lengths[i - 1];
-                } else if (lit_code == 17) {
-                    // Repeat a code length of 0 for 3 - 10 times (3 bits)
-                    i += bs.get(3) + 3 - 1;
-                } else if (lit_code == 18) {
-                    // Repeat a code length of 0 for 11 - 138 times (7 bits)
-                    i += bs.get(7) + 11 - 1;
+                    size_t dist = dist_alphabet[hcode];
+
+                    if (dist < text.size())
+                    {
+                        for (size_t i = 0, pos = text.size() - dist, j = 0; i < length; ++i, j = 0)
+                        {
+                            while (j < dist && i < length) text.push_back(text[pos + j++]), ++i;
+                        }
+                    }
                 } else {
-                    // 0 - 15: Represent code lengths of 0 - 15
-                    lit_code_lengths[i] = lit_code;
+                    text.push_back(lit_value);
                 }
-            }
 
-            // Read distance code lengths
-            std::vector<size_t>dist_code_lengths(HDIST);
-            for (size_t i = 0; i < HDIST; ++i) {
-                size_t code = 0, len = 0;
-                while (!code_lengths_alphabet.count(Code(code, len))) {
-                    code = (code << 1) + bs.get_huffman(1);
-                    len++;
-                }
-                size_t dist_code = code_lengths_alphabet[Code(code, len)];
-
-                if (dist_code == 16) {
-                    // Copy the previous code length 3 - 6 times (2 bits)
-                    if (i == 0) {
-                        std::cout << "Wrong code_length size" << std::endl;
-                        return false;
-                    }
-                    for (size_t times = bs.get(2) + 3; times > 0; times--, ++i)
-                        dist_code_lengths[i] = dist_code_lengths[i - 1];
-                } else if (dist_code == 17) {
-                    // Repeat a code length of 0 for 3 - 10 times (3 bits)
-                    i += bs.get(3) + 3 - 1;
-                } else if (dist_code == 18) {
-                    // Repeat a code length of 0 for 11 - 138 times (7 bits)
-                    i += bs.get(7) + 11 - 1;
-                } else {
-                    // 0 - 15: Represent code lengths of 0 - 15
-                    dist_code_lengths[i] = dist_code;
-                }
+                for (const auto& x : text) std::cout << (char)x;
+                std::cout << std::endl;
             }
 
             return true;
