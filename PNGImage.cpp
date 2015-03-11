@@ -13,7 +13,6 @@ typedef unsigned int   uint_t;
 typedef unsigned short ushort_t;
 typedef unsigned char  byte_t;
 
-
 const static int SIGNATURE_SIZE    = 8;
 const static int CHUNK_TYPE_SIZE   = 4;
 const static int CHUNK_LENGTH_SIZE = 4;
@@ -118,28 +117,11 @@ static const size_t DIST_CODE_SIZE = 5;
 static const byte_t dist_extra_bits[] = {
         0,0, 0,0, 1,1, 2,2,  3,3,   4,4,   5,5,   6,6,     7,7,     8,8,     9,9,       10,10,     11,11,     12,12,      13,13
 };
-//  0 1  2 3  4 5  6 7   8  9   10 11  12 13  14  15   16  17   18  19   20   21    22   23    24   25    26   27     28    29
+    //  0 1  2 3  4 5  6 7   8 9    10 11  12 13  14  15   16  17   18  19   20   21    22   23    24   25    26   27     28    29
 static const ushort_t dist_values[] = {
         1,2, 3,4, 5,7, 9,13, 17,25, 33,49, 65,97, 129,193, 257,385, 513,769, 1025,1537, 2049,3073, 4097,6145, 8193,12289, 16385,24577
 };
 
-
-struct Code {
-    size_t code;
-    size_t length;
-    Code (size_t c, size_t l) : code(c), length(l)
-    {}
-};
-
-bool operator< (const Code& lhs, const Code& rhs)
-{
-    return lhs.length < rhs.length || lhs.code < rhs.code;
-}
-
-bool operator== (const Code& lhs, const Code& rhs)
-{
-    return lhs.length == rhs.length && lhs.code == rhs.code;
-}
 
 // --------------------------------------------------------
 // File read / write support
@@ -200,19 +182,6 @@ void ImageFile::read(T& val)
     }   
 }
 
-template <typename T>
-T reverce_bits(const T& v, size_t count)
-{
-	T buf{};
-	for (size_t i = 0; i < count; ++i)
-	{
-		buf = (buf << 1) + ((v >> i) & 1);
-	}
-		
-	return buf;
-}
-
-
 template <>
 void ImageFile::read(ChunkType& val)
 {
@@ -257,6 +226,16 @@ bool check_crc(ImageFile& file)
     return file_crc == data_crc;
 }
 
+template <typename T>
+T reverce_bits(T v, size_t count)
+{
+    T buf{};
+    for (;count > 0; --count, v >>= 1) buf = (buf << 1) + (v & 1);
+    return buf;
+}
+
+// --------------------------------------------------------
+// reading a given number of bits from ImageFile
 
 struct BitStream {
     BitStream(std::vector<byte_t> f) : file(f), buf(0), bpos(0), dpos(0)
@@ -265,7 +244,6 @@ struct BitStream {
         if (!eof()) buf += (file[dpos++] << 8);
         if (!eof()) buf += (file[dpos++] << 16);
         if (!eof()) buf += (file[dpos++] << 24);
-        std::cout << std::hex << buf << std::endl;
     }
 
     ushort_t get (size_t count)
@@ -276,16 +254,13 @@ struct BitStream {
 		
         ushort_t res = static_cast<ushort_t>((buf >> bpos) & bit_mask[count]);
         bpos += count;
-        while (bpos > 7)
-        {
+        while (bpos > 7) {
             buf >>= 8; bpos -= 8;
-            if (dpos < file.size()) 
-			{
+            if (dpos < file.size()) {
 				uint_t bb = (file[dpos++] << 24);
 				buf += bb;
 			}
         }
-
         return res;
     }
 	
@@ -293,7 +268,6 @@ struct BitStream {
 	{
 		return reverce_bits(get(count), count);
 	}
-	
 
     bool eof() { return dpos >= file.size() && bpos >= sizeof(uint_t) * 8; }
 
@@ -304,68 +278,99 @@ private:
     size_t dpos;
 };
 
+// --------------------------------------------------------
+//
+class InflateState {
+public:
+    InflateState (size_t available_length)
+    {}
 
-std::map<Code, size_t> generate_huffman_codes(const std::vector<size_t> &code_lengths)
-{
-    // Count the number of codes for each code length
-    std::vector<size_t> bl_count(1);
-    for (const auto& l : code_lengths) {
-        if (l >= bl_count.size()) bl_count.resize(l+1, 0);
-        if (l) bl_count[l]++;
-    }
-    bl_count[0] = 0;
 
-    // Find the numerical value of the smallest code for each code length
-    std::vector<size_t> code_value (bl_count.size());
-    for (size_t bits = 1, code = 0; bits < bl_count.size(); ++bits) {
-        code = (code + bl_count[bits - 1]) << 1;
-        code_value[bits] = code;
-    }
-
-    // Assign numerical values to all codes
-    std::map<Code, size_t> code_alphabet;
-    for (size_t n = 0, len = 0;  n < code_lengths.size(); ++n) {
-        if ((len = code_lengths[n]) != 0) {
-            code_alphabet[Code(code_value[len], len)] = n;
-            ++code_value[len];
+    struct Code {
+        size_t code;
+        size_t length;
+        Code (size_t c, size_t l) : code(c), length(l)
+        {}
+        bool operator< (const Code& rhs)
+        {
+            return length < rhs.length || code < rhs.code;
         }
-    }
-
-    return code_alphabet;
-}
-
-std::vector<size_t> read_code_lengths(BitStream& bs, size_t count, std::map<Code, size_t> code_alphabet)
-{
-    std::vector<size_t>code_lengths(count);
-    for (size_t i = 0; i < count; ++i) {
-        Code hcode(0,0);
-        while (!code_alphabet.count(hcode)) {
-            hcode.code = (hcode.code << 1) + bs.get_huffman(1);
-            hcode.length++;
+        bool operator== (const Code& rhs)
+        {
+            return length == rhs.length && code == rhs.code;
         }
-        size_t lit_code = code_alphabet[hcode];
+    };
 
-        if (lit_code == 16) {
-            // Copy the previous code length 3 - 6 times (2 bits)
-            if (i == 0) {
-                std::cout << "Wrong code_length size" << std::endl;
-                return std::vector<size_t>();
+    typedef std::map<Code, size_t> huffman_alphabet_t;
+
+    std::vector<size_t> read_code_lengths(BitStream& bs, size_t count, huffman_alphabet_t code_alphabet)
+    {
+        std::vector<size_t>code_lengths(count);
+        for (size_t i = 0; i < count; ++i) {
+            Code hcode(0,0);
+            while (!code_alphabet.count(hcode)) {
+                hcode.code = (hcode.code << 1) + bs.get_huffman(1);
+                hcode.length++;
             }
-            for (size_t times = bs.get(2) + 3; times > 0; times--, ++i)
-                code_lengths[i] = code_lengths[i - 1];
-        } else if (lit_code == 17) {
-            // Repeat a code length of 0 for 3 - 10 times (3 bits)
-            i += bs.get(3) + 3 - 1;
-        } else if (lit_code == 18) {
-            // Repeat a code length of 0 for 11 - 138 times (7 bits)
-            i += bs.get(7) + 11 - 1;
-        } else {
-            // 0 - 15: Represent code lengths of 0 - 15
-            code_lengths[i] = lit_code;
+            size_t lit_code = code_alphabet[hcode];
+
+            if (lit_code == 16) {
+                // Copy the previous code length 3 - 6 times (2 bits)
+                if (i == 0) {
+                    std::cout << "Wrong code_length size" << std::endl;
+                    return std::vector<size_t>();
+                }
+                for (size_t times = bs.get(2) + 3; times > 0; times--, ++i)
+                    code_lengths[i] = code_lengths[i - 1];
+            } else if (lit_code == 17) {
+                // Repeat a code length of 0 for 3 - 10 times (3 bits)
+                i += bs.get(3) + 3 - 1;
+            } else if (lit_code == 18) {
+                // Repeat a code length of 0 for 11 - 138 times (7 bits)
+                i += bs.get(7) + 11 - 1;
+            } else {
+                // 0 - 15: Represent code lengths of 0 - 15
+                code_lengths[i] = lit_code;
+            }
         }
+        return code_lengths;
     }
-    return code_lengths;
-}
+
+    std::vector<byte_t> read_huffman_code()
+    {}
+    huffman_alphabet_t generate_huffman_codes(const std::vector<size_t> &code_lengths)
+    {
+        // Count the number of codes for each code length
+        std::vector<size_t> bl_count(1);
+        for (const auto& l : code_lengths) {
+            if (l >= bl_count.size()) bl_count.resize(l+1, 0);
+            if (l) bl_count[l]++;
+        }
+        bl_count[0] = 0;
+
+        // Find the numerical value of the smallest code for each code length
+        std::vector<size_t> code_value (bl_count.size());
+        for (size_t bits = 1, code = 0; bits < bl_count.size(); ++bits) {
+            code = (code + bl_count[bits - 1]) << 1;
+            code_value[bits] = code;
+        }
+
+        // Assign numerical values to all codes
+        std::map<Code, size_t> code_alphabet;
+        for (size_t n = 0, len = 0;  n < code_lengths.size(); ++n) {
+            if ((len = code_lengths[n]) != 0) {
+                code_alphabet[Code(code_value[len], len)] = n;
+                ++code_value[len];
+            }
+        }
+
+        return code_alphabet;
+    }
+
+
+};
+
+
 
 // --------------------------------------------------------
 // Image header
@@ -536,6 +541,7 @@ bool PNGImage::Impl::from_file(ImageFile& file)
             switch (type)
             {
                 case ChunkType::IDAT :
+                    std::cout << "Process IDAT chunk" << std::endl;
                     has_IDAT = inflate(file, length);
                     break;
 
@@ -584,9 +590,8 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
     static bool all_data = false;
     
     static const size_t uncompressed_block_limit = 65535;
-    
-    const size_t MAX_WINDOW_SIZE = 32768;
-    std::cout << "Process IDAT chunk" << std::endl;
+    static const size_t MAX_WINDOW_SIZE = 32768;
+
     if (file.is_open() && !file.eof())
     {
 
@@ -618,10 +623,7 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
             while not last block
          */
 
-
-
-        
-        
+        // read zlib heder
         byte_t cmf, flg;
         file >> cmf >> flg;
         byte_t cm     = (byte_t) (cmf & 0x0F);
@@ -630,7 +632,7 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         byte_t fdict  = (byte_t) ((flg >> 5) & 1);
         byte_t flevel = (byte_t) ((flg >> 6) & 0x03);
 
-        size_t window_size = (size_t) pow(2, (cinfo + 8));
+        size_t sliding_window_size = (size_t) pow(2, (cinfo + 8));
         
         const int BFINAL = 1;
 
@@ -638,7 +640,7 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         
         // CM = 8 denotes the "deflate" compression method
         // fdict = 0, The additional flags shall not specify a preset dictionary 
-        if ((cmf * 256 + flg) % 31 != 0 || cm != 8 || window_size > MAX_WINDOW_SIZE || fdict != 0)
+        if ((cmf * 256 + flg) % 31 != 0 || cm != 8 || sliding_window_size > MAX_WINDOW_SIZE || fdict != 0)
         {
             std::cout << "Wrong compression params" << std::endl;
         }
@@ -647,7 +649,8 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
                   << "\tcinfo: "  << std::hex << (int)cinfo  << "\n"
                   << "\tfcheck: " << std::hex << (int)fcheck << "\n"
                   << "\tfdict: "  << std::hex << (int)fdict  << "\n"
-                  << "\tflevel: " << std::hex << (int)flevel << "\n";
+                  << "\tflevel: " << std::hex << (int)flevel << "\n"
+                  << "\twindow_size: " << std::dec << (int)sliding_window_size << "\n";
 
         file.skip(length - 2 + CHUNK_CRC_SIZE);
         
@@ -680,8 +683,7 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
         btype = bs.get(2);
 
 
-        if (btype == BTYPE_NO)   // stored with no compression
-        {
+        if (btype == BTYPE_NO) {   // stored with no compression
             std::cout << "BTYPE_NO" << std::endl;
 			// skip any remaining bits in current partially processed byte
 			// read LEN and NLEN (see next section)
@@ -700,12 +702,8 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
          one's complement of LEN.
 */
 
-        } else
-        if (btype == BTYPE_FIXED)
-        {
+        } else if (btype == BTYPE_FIXED) {
             std::cout << "BTYPE_FIXED" << std::endl;
-
-			
 			while (!bs.eof())
 			{
 				ushort_t code = bs.get_huffman(7);   
@@ -767,14 +765,12 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 			}
 			std::cout << "complete" << std::endl;
 
-        } else
-        if (btype == BTYPE_DYNAMIC)
-        {
+        } else if (btype == BTYPE_DYNAMIC) {
 			std::cout << "BTYPE_DYNAMIC" << std::endl;
 
 			size_t HLIT = bs.get(5) + 257; //  HLIT + 257 code lengths for the literal/length alphabet
 			size_t HDIST = bs.get(5) + 1;  //  HDIST + 1 code lengths for the distance alphabet
-			size_t HCLEN = bs.get(4) + 4;  //  (HCLEN + 4) x 3 bits: code lengths for the code length alphabet
+			size_t HCLEN = bs.get(4) + 4;  // (HCLEN + 4) x 3 bits: code lengths for the code length alphabet
 			std::cout << "HLIT " << std::dec << HLIT << "\n"
 					  << "HDIST " << std::dec <<  HDIST << "\n"
 					  << "HCLEN " << std::dec <<  HCLEN << std::endl;
@@ -804,7 +800,7 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
 
                 if (lit_value > 256 && lit_value <= 287 ) // is lentgh / dist code
                 {
-                    byte_t length_extra_bits_count = length_extra_bits[lit_value - 256];
+                    size_t length_extra_bits_count = length_extra_bits[lit_value - 256];
                     size_t length = length_values[lit_value - 256] + bs.get(length_extra_bits_count);
 
                     Code hcode(0,0);
@@ -812,7 +808,9 @@ bool PNGImage::Impl::inflate(ImageFile& file, size_t length)
                         hcode.code = (hcode.code << 1) + bs.get_huffman(1);
                         hcode.length++;
                     }
-                    size_t dist = dist_alphabet[hcode];
+                    size_t dist_code = dist_alphabet[hcode];
+                    size_t dist_extra_bits_count = dist_extra_bits[dist_code];
+                    size_t dist = dist_values[dist_code] + bs.get(dist_extra_bits_count);
 
                     if (dist < text.size())
                     {
